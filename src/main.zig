@@ -150,19 +150,16 @@ pub fn main() !void {
             defer manifest.deinit();
 
             // First thing to do is to validate that any framework dependency is listed in the manifest
-            {
-                var frameworks = std.StringHashMap(void).init(allocator);
-                defer frameworks.deinit();
-
-                for (manifest.value) |framework| {
-                    try frameworks.put(framework.name, {});
-                }
-                for (manifest.value) |framework| {
-                    for (framework.dependencies) |dependency| {
-                        if (!frameworks.contains(dependency)) {
-                            std.debug.print("Framework '{s}' has '{s}' listed as a dependency but it isn't in the manifest.\n", .{ framework.name, dependency });
-                            return;
-                        }
+            var frameworks = std.StringHashMap(Framework).init(allocator);
+            defer frameworks.deinit();
+            for (manifest.value) |framework| {
+                try frameworks.put(framework.name, framework);
+            }
+            for (manifest.value) |framework| {
+                for (framework.dependencies) |dependency| {
+                    if (!frameworks.contains(dependency)) {
+                        std.debug.print("Framework '{s}' has '{s}' listed as a dependency but it isn't in the manifest.\n", .{ framework.name, dependency });
+                        return;
                     }
                 }
             }
@@ -182,8 +179,9 @@ pub fn main() !void {
             });
             defer pool.deinit();
 
+            const analyzers = try allocator.alloc(SemanticAnalyzer, manifest.value.len);
             var frameworks_parse_work = std.Thread.WaitGroup{};
-            for (manifest.value) |framework| {
+            for (manifest.value, 0..) |framework, index| {
                 const path_to_header = try std.fmt.allocPrint(
                     allocator,
                     "{s}.framework/Headers/{s}.h",
@@ -219,11 +217,67 @@ pub fn main() !void {
                             .allocator = allocator,
                             .framework = framework,
                             .path_to_header = path,
+                            .result = &analyzers[index],
                         },
                     },
                 );
             }
             pool.waitAndWork(&frameworks_parse_work);
+
+            // Generate the output zig files based off the details in the manifest.
+            for (analyzers) |analyzer| {
+                const framework = frameworks.get(analyzer.framework).?;
+
+                var iter = analyzer.declerations.iterator();
+                while (iter.next()) |entry| {
+                    const decl = entry.value_ptr;
+                    std.debug.print("{s}\n", .{decl.framework});
+
+                    // Check to see if the decleration is part of a framework listed in the manifest.
+                    if (!std.mem.eql(u8, framework.name, decl.framework)) {
+                        var found = false;
+                        for (framework.dependencies) |dep| {
+                            if (std.mem.eql(u8, dep, decl.framework)) {
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if (!found) {
+                            if (frameworks.contains(decl.framework)) {
+                                std.debug.print(
+                                    "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest({s}).\n",
+                                    .{
+                                        framework.name,
+                                        decl.framework,
+                                        framework.name,
+                                        result.path,
+                                    },
+                                );
+                            }
+                            // Let the user know that the framework is also not in the manifest to ease debugging.
+                            else {
+                                std.debug.print(
+                                    "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest({s}). {s} is not listed in the manifest at all.\n",
+                                    .{
+                                        framework.name,
+                                        decl.framework,
+                                        framework.name,
+                                        result.path,
+                                        decl.framework,
+                                    },
+                                );
+                            }
+                            return;
+                        }
+
+                        // Skip this decleration as it will be declared in another generated file and included in this one.
+                        continue;
+                    }
+
+                    // FOO
+                }
+            }
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
@@ -234,6 +288,7 @@ const FrameworkParseInfo = struct {
     allocator: std.mem.Allocator,
     framework: Framework,
     path_to_header: []const u8,
+    result: *SemanticAnalyzer,
 };
 fn parseFramework(info: FrameworkParseInfo) void {
     parseFrameworkInner(info) catch unreachable;
@@ -276,7 +331,8 @@ fn parseFrameworkInner(info: FrameworkParseInfo) !void {
     )).?;
     defer ast.deinit();
 
-    _ = try SemanticAnalyzer.run(ast.value, .{
+    info.result.* = try SemanticAnalyzer.run(ast.value, .{
         .allocator = info.allocator,
+        .framework = info.framework.name,
     });
 }

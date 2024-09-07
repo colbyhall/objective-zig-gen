@@ -5,8 +5,9 @@ const ASTNode = @import("ASTNode.zig");
 
 arena: std.heap.ArenaAllocator,
 declerations: std.StringArrayHashMap(Decleration),
+framework: []const u8,
 
-const Type = union(enum) {
+pub const Type = union(enum) {
     void,
     uint64_t,
     pointer: struct {
@@ -15,6 +16,10 @@ const Type = union(enum) {
         @"const": u1,
     },
     declared: []const u8,
+    block: struct {
+        return_type: *Type,
+        params: []const Type,
+    },
 
     fn print(self: Type) void {
         switch (self) {
@@ -31,50 +36,75 @@ const Type = union(enum) {
                 p.type.print();
             },
             .declared => |d| std.debug.print("{s}", .{d}),
+            .block => |b| {
+                std.debug.print("* const fn(", .{});
+                for (b.params, 0..) |param, index| {
+                    param.print();
+                    if (index < b.params.len - 1) {
+                        std.debug.print(", ", .{});
+                    }
+                    std.debug.print(") ", .{});
+                    b.return_type.print();
+                }
+            },
         }
     }
 };
 
-const Protocol = struct {
-    inherits: []const []const u8,
-    children: []Child,
+pub const Method = struct {
+    name: []const u8,
+    params: []const Param,
+    return_type: Type,
 
-    const Method = struct {
-        name: []const u8,
-        params: []const Param,
-        return_type: Type,
-
-        const Param = struct {
-            name: []const u8,
-            type: Type,
-        };
-    };
-    const Property = struct {
+    pub const Param = struct {
         name: []const u8,
         type: Type,
     };
+};
 
-    const Child = union(enum) {
+pub const Property = struct {
+    name: []const u8,
+    type: Type,
+};
+
+pub const Protocol = struct {
+    inherits: []const []const u8,
+    children: []const Child,
+
+    pub const Child = union(enum) {
         method: Method,
         property: Property,
     };
 };
 
-const Decleration = struct {
+pub const Interface = struct {
+    protocols: []const []const u8,
+    super: []const u8,
+    children: []const Child,
+
+    pub const Child = union(enum) {
+        method: Method,
+        property: Property,
+    };
+};
+
+pub const Decleration = struct {
     name: []const u8,
     framework: []const u8,
 
     type: union(enum) {
         protocol: Protocol,
+        interface: Interface,
     },
 };
 
-const Error = error{
+pub const Error = error{
     OutOfMemory,
     UnexpectedKind,
 };
-const Options = struct {
+pub const Options = struct {
     allocator: std.mem.Allocator,
+    framework: []const u8,
 };
 pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
     if (ast.kind != .TranslationUnitDecl) {
@@ -84,6 +114,7 @@ pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
     var self = Self{
         .arena = std.heap.ArenaAllocator.init(options.allocator),
         .declerations = std.StringArrayHashMap(Decleration).init(options.allocator),
+        .framework = options.framework,
     };
 
     for (ast.inner) |node| {
@@ -91,21 +122,18 @@ pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
             continue;
         }
 
-        if (node.gatherFramework()) |framework| {
-            _ = framework;
-            // std.debug.print("Framework: {s}\n", .{framework});
-        } else {
+        if (node.gatherFramework() == null) {
             continue;
         }
 
-        // std.debug.print("Type: {}, Name: {s}. Has {} children.\n", .{ node.kind, node.name, node.inner.len });
+        var decl: ?Decleration = null;
         switch (node.kind) {
             .TypedefDecl => {},
-            .ObjCInterfaceDecl => {},
+            .ObjCInterfaceDecl => {
+                // decl = try self.analyzeObjCInterface(node);
+            },
             .ObjCProtocolDecl => {
-                if (try self.analyzeObjCProtocol(node)) |protocol| {
-                    try self.declerations.put(protocol.name, protocol);
-                }
+                decl = try self.analyzeObjCProtocol(node);
             },
             .ObjCCategoryDecl => {},
             .VarDecl => {},
@@ -125,6 +153,10 @@ pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
                 .EmptyDecl,
             }, node.kind),
         }
+
+        if (decl) |d| {
+            try self.declerations.put(d.name, d);
+        }
     }
 
     var iter = self.declerations.iterator();
@@ -137,6 +169,40 @@ pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
                 for (p.inherits) |i| {
                     std.debug.print("\t\t{s}\n", .{i});
                 }
+                std.debug.print("\tChildren:\n", .{});
+                for (p.children) |c| {
+                    switch (c) {
+                        .method => |m| {
+                            var name = m.name;
+                            if (std.mem.indexOf(u8, name, ":")) |index| {
+                                name = name[0..index];
+                            }
+                            std.debug.print("\t\tfn {s}(", .{name});
+                            for (m.params, 0..) |param, index| {
+                                std.debug.print("{s}: ", .{param.name});
+                                param.type.print();
+                                if (index < m.params.len - 1) {
+                                    std.debug.print(", ", .{});
+                                }
+                            }
+                            std.debug.print(") ", .{});
+                            m.return_type.print();
+                            std.debug.print("\n", .{});
+                        },
+                        .property => |prop| {
+                            std.debug.print("\t\t{s}: ", .{prop.name});
+                            prop.type.print();
+                            std.debug.print("\n", .{});
+                        },
+                    }
+                }
+            },
+            .interface => |p| {
+                std.debug.print("\tProtocols:\n", .{});
+                for (p.protocols) |i| {
+                    std.debug.print("\t\t{s}\n", .{i});
+                }
+                std.debug.print("\tSuper: {s}\n", .{p.super});
                 std.debug.print("\tChildren:\n", .{});
                 for (p.children) |c| {
                     switch (c) {
@@ -184,6 +250,7 @@ fn expectsKind(comptime expects: []const ASTNode.Kind, found: ASTNode.Kind) Erro
 }
 
 fn parseType(self: *Self, string: []const u8) !Type {
+    std.debug.print("{s}\n", .{string});
     var slice = string;
     var pointer = false;
     var nullable = false;
@@ -259,10 +326,10 @@ fn parseType(self: *Self, string: []const u8) !Type {
     return result.?;
 }
 
-fn analyzeObjCMethod(self: *Self, node: ASTNode) Error!Protocol.Method {
+fn analyzeObjCMethod(self: *Self, node: ASTNode) Error!Method {
     try expectsKind(&.{.ObjCMethodDecl}, node.kind);
 
-    var params = try std.ArrayList(Protocol.Method.Param).initCapacity(self.arena.allocator(), node.inner.len);
+    var params = try std.ArrayList(Method.Param).initCapacity(self.arena.allocator(), node.inner.len);
     for (node.inner) |child| {
         switch (child.kind) {
             .ParmVarDecl => {},
@@ -272,6 +339,7 @@ fn analyzeObjCMethod(self: *Self, node: ASTNode) Error!Protocol.Method {
             .SwiftAsyncNameAttr,
             .SwiftNameAttr,
             .ObjCReturnsInnerPointerAttr,
+            .ObjCDesignatedInitializerAttr,
             => {
                 continue;
             },
@@ -283,6 +351,7 @@ fn analyzeObjCMethod(self: *Self, node: ASTNode) Error!Protocol.Method {
                 .SwiftNameAttr,
                 .SwiftAsyncNameAttr,
                 .ObjCReturnsInnerPointerAttr,
+                .ObjCDesignatedInitializerAttr,
             }, child.kind),
         }
 
@@ -303,7 +372,7 @@ fn analyzeObjCMethod(self: *Self, node: ASTNode) Error!Protocol.Method {
     };
 }
 
-fn analyzeObjCProperty(self: *Self, node: ASTNode) Error!Protocol.Property {
+fn analyzeObjCProperty(self: *Self, node: ASTNode) Error!Property {
     try expectsKind(&.{.ObjCPropertyDecl}, node.kind);
 
     return .{
@@ -351,6 +420,60 @@ fn analyzeObjCProtocol(self: *Self, node: ASTNode) Error!?Decleration {
         .type = .{
             .protocol = .{
                 .inherits = inherits,
+                .children = children.items,
+            },
+        },
+    };
+}
+
+fn analyzeObjCInterface(self: *Self, node: ASTNode) Error!?Decleration {
+    try expectsKind(&.{.ObjCInterfaceDecl}, node.kind);
+
+    if (node.inner.len == 0) {
+        return null;
+    }
+
+    const protocols: [][]const u8 = if (node.protocols.len > 0) try self.arena.allocator().alloc([]const u8, node.protocols.len) else &.{};
+    for (node.protocols, 0..) |protocol, index| {
+        try expectsKind(&.{.ObjCProtocolDecl}, protocol.kind);
+        protocols[index] = try self.arena.allocator().dupe(u8, protocol.name);
+    }
+
+    var children = try std.ArrayList(Interface.Child).initCapacity(self.arena.allocator(), node.inner.len);
+    for (node.inner) |child| {
+        switch (child.kind) {
+            .ObjCMethodDecl => {
+                try children.append(.{ .method = try self.analyzeObjCMethod(child) });
+            },
+            .ObjCPropertyDecl => {
+                try children.append(.{ .property = try self.analyzeObjCProperty(child) });
+            },
+            .ObjCTypeParamDecl => {
+                std.debug.print("{s}\n", .{child.name});
+            },
+            .ObjCIvarDecl => {},
+            .RecordDecl => {},
+            .VisibilityAttr => {},
+            .AvailabilityAttr => {},
+            else => try unexpectedKind(&.{
+                .ObjCMethodDecl,
+                .ObjCPropertyDecl,
+                .ObjCTypeParamDecl,
+                .VisibilityAttr,
+                .AvailabilityAttr,
+                .RecordDecl,
+                .ObjCIvarDecl,
+            }, child.kind),
+        }
+    }
+
+    return .{
+        .name = try self.arena.allocator().dupe(u8, node.name),
+        .framework = try self.arena.allocator().dupe(u8, node.gatherFramework().?),
+        .type = .{
+            .interface = .{
+                .protocols = protocols,
+                .super = try self.arena.allocator().dupe(u8, node.super.?.name),
                 .children = children.items,
             },
         },
