@@ -130,7 +130,7 @@ pub fn run(ast: ASTNode, options: Self.Options) Error!Self {
         switch (node.kind) {
             .TypedefDecl => {},
             .ObjCInterfaceDecl => {
-                // decl = try self.analyzeObjCInterface(node);
+                decl = try self.analyzeObjCInterface(node);
             },
             .ObjCProtocolDecl => {
                 decl = try self.analyzeObjCProtocol(node);

@@ -2,8 +2,9 @@ const std = @import("std");
 const ArgParser = @import("arg_parser.zig").ArgParser;
 const SemanticAnalyzer = @import("SemanticAnalyzer.zig");
 const ASTNode = @import("ASTNode.zig");
+const Generator = @import("Generator.zig");
 
-const Framework = struct {
+pub const Framework = struct {
     name: []const u8,
     output_file: []const u8,
 
@@ -131,16 +132,20 @@ pub fn main() !void {
     const args = try ArgParser.run(allocator, &.{});
     switch (args) {
         .parsed => |result| {
-            const file = try std.fs.openFileAbsolute(result.path, .{});
-            defer file.close();
+            // Read in the manifest file and deserialize it.
+            var possible_manifest: ?std.json.Parsed(Manifest) = null;
+            {
+                const manifest_file = try std.fs.openFileAbsolute(result.path, .{});
+                defer manifest_file.close();
 
-            const contents = try file.readToEndAlloc(allocator, 2 * 1024 * 1024);
-            const possible_manifest = try parseJsonWithCustomErrorHandling(
-                Manifest,
-                allocator,
-                contents,
-                result.path,
-            );
+                const contents = try manifest_file.readToEndAlloc(allocator, 2 * 1024 * 1024);
+                possible_manifest = try parseJsonWithCustomErrorHandling(
+                    Manifest,
+                    allocator,
+                    contents,
+                    result.path,
+                );
+            }
 
             if (possible_manifest == null) {
                 return;
@@ -180,7 +185,7 @@ pub fn main() !void {
             defer pool.deinit();
 
             const analyzers = try allocator.alloc(SemanticAnalyzer, manifest.value.len);
-            var frameworks_parse_work = std.Thread.WaitGroup{};
+            var frameworks_semantic_analysis = std.Thread.WaitGroup{};
             for (manifest.value, 0..) |framework, index| {
                 const path_to_header = try std.fmt.allocPrint(
                     allocator,
@@ -210,7 +215,7 @@ pub fn main() !void {
                 };
 
                 pool.spawnWg(
-                    &frameworks_parse_work,
+                    &frameworks_semantic_analysis,
                     parseFramework,
                     .{
                         .{
@@ -222,66 +227,41 @@ pub fn main() !void {
                     },
                 );
             }
-            pool.waitAndWork(&frameworks_parse_work);
+            pool.waitAndWork(&frameworks_semantic_analysis);
 
-            // Generate the output zig files based off the details in the manifest.
-            for (analyzers) |analyzer| {
-                const framework = frameworks.get(analyzer.framework).?;
+            const cwd = std.fs.cwd();
 
-                var iter = analyzer.declerations.iterator();
-                while (iter.next()) |entry| {
-                    const decl = entry.value_ptr;
-                    std.debug.print("{s}\n", .{decl.framework});
-
-                    // Check to see if the decleration is part of a framework listed in the manifest.
-                    if (!std.mem.eql(u8, framework.name, decl.framework)) {
-                        var found = false;
-                        for (framework.dependencies) |dep| {
-                            if (std.mem.eql(u8, dep, decl.framework)) {
-                                found = true;
-                                break;
-                            }
-                        }
-
-                        if (!found) {
-                            if (frameworks.contains(decl.framework)) {
-                                std.debug.print(
-                                    "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest({s}).\n",
-                                    .{
-                                        framework.name,
-                                        decl.framework,
-                                        framework.name,
-                                        result.path,
-                                    },
-                                );
-                            }
-                            // Let the user know that the framework is also not in the manifest to ease debugging.
-                            else {
-                                std.debug.print(
-                                    "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest({s}). {s} is not listed in the manifest at all.\n",
-                                    .{
-                                        framework.name,
-                                        decl.framework,
-                                        framework.name,
-                                        result.path,
-                                        decl.framework,
-                                    },
-                                );
-                            }
-                            return;
-                        }
-
-                        // Skip this decleration as it will be declared in another generated file and included in this one.
-                        continue;
-                    }
-
-                    // FOO
+            // TODO: Add a way to specify the output option.
+            const output_path = "output";
+            cwd.makeDir(output_path) catch |err| {
+                if (err != std.fs.Dir.MakeError.PathAlreadyExists) {
+                    return err;
                 }
+            };
+
+            var output_dir = try std.fs.cwd().openDir(output_path, .{});
+            defer output_dir.close();
+
+            var frameworks_generation = std.Thread.WaitGroup{};
+            for (analyzers) |*analyzer| {
+                pool.spawnWg(&frameworks_generation, generateFramework, .{
+                    .{
+                        .allocator = allocator,
+                        .output_dir = &output_dir,
+                        .frameworks = &frameworks,
+                        .analyzer = analyzer,
+                    },
+                });
             }
+            pool.waitAndWork(&frameworks_generation);
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
     }
+}
+
+fn generateFramework(options: Generator.Options) void {
+    Generator.run(options) catch unreachable;
 }
 
 const FrameworkParseInfo = struct {
@@ -311,6 +291,8 @@ fn parseFrameworkInner(info: FrameworkParseInfo) !void {
         .argv = args,
         .max_output_bytes = 1024 * 1024 * 1024,
     });
+    defer info.allocator.free(ast_json.stdout);
+    defer info.allocator.free(ast_json.stderr);
 
     // HACK: Can't figure out how to not get clang to produce this file.
     std.fs.cwd().deleteFile("a.out") catch {};
