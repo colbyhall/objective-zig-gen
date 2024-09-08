@@ -242,6 +242,13 @@ pub fn main() !void {
             var output_dir = try std.fs.cwd().openDir(output_path, .{});
             defer output_dir.close();
 
+            // Copy about the objc runtime to the output directory.
+            {
+                var objc_file = try output_dir.createFile("objc.zig", .{});
+                defer objc_file.close();
+                _ = try objc_file.write(@embedFile("objc.zig"));
+            }
+
             var frameworks_generation = std.Thread.WaitGroup{};
             for (analyzers) |*analyzer| {
                 pool.spawnWg(&frameworks_generation, generateFramework, .{
