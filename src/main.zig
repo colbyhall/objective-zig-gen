@@ -2,7 +2,7 @@ const std = @import("std");
 const ArgParser = @import("arg_parser.zig").ArgParser;
 const SemanticAnalyzer = @import("SemanticAnalyzer.zig");
 const ASTNode = @import("ASTNode.zig");
-const Generator = @import("Generator.zig");
+const Renderer = @import("Renderer.zig");
 
 pub const Framework = struct {
     name: []const u8,
@@ -249,9 +249,9 @@ pub fn main() !void {
                 _ = try objc_file.write(@embedFile("objc.zig"));
             }
 
-            var frameworks_generation = std.Thread.WaitGroup{};
+            var frameworks_render = std.Thread.WaitGroup{};
             for (analyzers) |*analyzer| {
-                pool.spawnWg(&frameworks_generation, generateFramework, .{
+                pool.spawnWg(&frameworks_render, renderFramework, .{
                     .{
                         .allocator = allocator,
                         .output_dir = &output_dir,
@@ -260,15 +260,15 @@ pub fn main() !void {
                     },
                 });
             }
-            pool.waitAndWork(&frameworks_generation);
+            pool.waitAndWork(&frameworks_render);
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
     }
 }
 
-fn generateFramework(options: Generator.Options) void {
-    Generator.run(options) catch unreachable;
+fn renderFramework(options: Renderer.Options) void {
+    Renderer.run(options) catch unreachable;
 }
 
 const FrameworkParseInfo = struct {
