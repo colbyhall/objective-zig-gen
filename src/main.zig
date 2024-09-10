@@ -1,4 +1,7 @@
 const std = @import("std");
+const mem = std.mem;
+const Allocator = mem.Allocator;
+
 const ArgParser = @import("arg_parser.zig").ArgParser;
 const SemanticAnalyzer = @import("SemanticAnalyzer.zig");
 const ASTNode = @import("ASTNode.zig");
@@ -15,7 +18,7 @@ const Manifest = []const Framework;
 
 fn parseJsonWithCustomErrorHandling(
     comptime T: type,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     complete_input: []const u8,
     file: []const u8,
 ) !?std.json.Parsed(T) {
@@ -67,7 +70,7 @@ fn parseJsonWithCustomErrorHandling(
         );
 
         // Search for the next newline. If one can't be found then we're at the EOF
-        var next_newline = std.mem.indexOf(u8, blob, "\n");
+        var next_newline = mem.indexOf(u8, blob, "\n");
         var line = if (next_newline) |newline| blob[0..newline] else blob;
         if (next_newline) |newline| {
             blob = blob[newline + 1 ..];
@@ -89,7 +92,7 @@ fn parseJsonWithCustomErrorHandling(
             if (next_newline == null) {
                 break;
             }
-            next_newline = std.mem.indexOf(u8, blob, "\n");
+            next_newline = mem.indexOf(u8, blob, "\n");
 
             line_number += 1;
             if (next_newline) |newline| {
@@ -112,7 +115,7 @@ fn parseJsonWithCustomErrorHandling(
     return result;
 }
 
-pub fn acquireSDKPath(allocator: std.mem.Allocator) ![]const u8 {
+pub fn acquireSDKPath(allocator: Allocator) ![]const u8 {
     const args = [_][]const u8{
         "xcrun",
         "--show-sdk-path",
@@ -216,7 +219,7 @@ pub fn main() !void {
 
                 pool.spawnWg(
                     &frameworks_semantic_analysis,
-                    parseFramework,
+                    parseAndAnalyzeFramework,
                     .{
                         .{
                             .allocator = allocator,
@@ -239,7 +242,7 @@ pub fn main() !void {
                 }
             };
 
-            var output_dir = try std.fs.cwd().openDir(output_path, .{});
+            var output_dir = try cwd.openDir(output_path, .{});
             defer output_dir.close();
 
             // Copy about the objc runtime to the output directory.
@@ -271,16 +274,16 @@ fn renderFramework(options: Renderer.Options) void {
     Renderer.run(options) catch unreachable;
 }
 
-const FrameworkParseInfo = struct {
-    allocator: std.mem.Allocator,
+const FrameworkParseAndAnalyzeInfo = struct {
+    allocator: Allocator,
     framework: Framework,
     path_to_header: []const u8,
     result: *SemanticAnalyzer,
 };
-fn parseFramework(info: FrameworkParseInfo) void {
-    parseFrameworkInner(info) catch unreachable;
+fn parseAndAnalyzeFramework(info: FrameworkParseAndAnalyzeInfo) void {
+    parseAndAnalyzeFrameworkInner(info) catch unreachable;
 }
-fn parseFrameworkInner(info: FrameworkParseInfo) !void {
+fn parseAndAnalyzeFrameworkInner(info: FrameworkParseAndAnalyzeInfo) !void {
     const args = &[_][]const u8{
         "zig",
         "c++",
