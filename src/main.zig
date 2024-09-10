@@ -3,8 +3,8 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
-const SemanticAnalyzer = @import("SemanticAnalyzer.zig");
-const ASTNode = @import("ASTNode.zig");
+const Analyzer = @import("Analyzer.zig");
+const AstNode = @import("AstNode.zig");
 const Renderer = @import("Renderer.zig");
 
 pub const Framework = struct {
@@ -187,7 +187,7 @@ pub fn main() !void {
             });
             defer pool.deinit();
 
-            const analyzers = try allocator.alloc(SemanticAnalyzer, manifest.value.len);
+            const analyzers = try allocator.alloc(Analyzer, manifest.value.len);
             var frameworks_semantic_analysis = std.Thread.WaitGroup{};
             for (manifest.value, 0..) |framework, index| {
                 const path_to_header = try std.fmt.allocPrint(
@@ -278,7 +278,7 @@ const FrameworkParseAndAnalyzeInfo = struct {
     allocator: Allocator,
     framework: Framework,
     path_to_header: []const u8,
-    result: *SemanticAnalyzer,
+    result: *Analyzer,
 };
 fn parseAndAnalyzeFramework(info: FrameworkParseAndAnalyzeInfo) void {
     parseAndAnalyzeFrameworkInner(info) catch unreachable;
@@ -316,14 +316,14 @@ fn parseAndAnalyzeFrameworkInner(info: FrameworkParseAndAnalyzeInfo) !void {
     );
 
     const ast = (try parseJsonWithCustomErrorHandling(
-        ASTNode,
+        AstNode,
         info.allocator,
         ast_json.stdout,
         info.path_to_header,
     )).?;
     defer ast.deinit();
 
-    info.result.* = try SemanticAnalyzer.run(ast.value, .{
+    info.result.* = try Analyzer.run(ast.value, .{
         .allocator = info.allocator,
         .framework = info.framework.name,
     });

@@ -1,3 +1,5 @@
+// NOTE: This file is basically an exact copy of https://github.com/hexops/mach-objc/blob/main/src/objc.zig which is under the Apache 2 license
+
 const builtin = @import("builtin");
 const std = @import("std");
 

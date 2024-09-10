@@ -9,20 +9,20 @@ const Dir = fs.Dir;
 const File = fs.File;
 
 const Framework = @import("main.zig").Framework;
-const SemanticAnalyzer = @import("SemanticAnalyzer.zig");
+const Analyzer = @import("Analyzer.zig");
 
 allocator: Allocator,
 frameworks: *const std.StringHashMap(Framework),
 writer: File.Writer,
-analyzer: *const SemanticAnalyzer,
+analyzer: *const Analyzer,
 
-pub const Error = error{FrameworkNotFound} || File.WriteError || SemanticAnalyzer.Type.Table.Error || File.OpenError;
+pub const Error = error{FrameworkNotFound} || File.WriteError || Analyzer.Type.Table.Error || File.OpenError;
 
 pub const Options = struct {
     allocator: Allocator,
     output_dir: *Dir,
     frameworks: *const std.StringHashMap(Framework),
-    analyzer: *const SemanticAnalyzer,
+    analyzer: *const Analyzer,
 };
 pub fn run(options: Options) Error!void {
     const framework = options.frameworks.get(options.analyzer.framework).?;
@@ -68,7 +68,7 @@ pub fn run(options: Options) Error!void {
     }
 }
 
-fn renderNamed(self: *Renderer, named: SemanticAnalyzer.Type.Table.Named) Error!void {
+fn renderNamed(self: *Renderer, named: Analyzer.Type.Table.Named) Error!void {
     switch (named.origin) {
         // Check to see if the decleration is part of a framework listed in the manifest.
         .framework => |f| {
@@ -131,7 +131,7 @@ fn renderParamName(self: *Renderer, name: []const u8) Error!void {
     _ = try self.writer.write(work);
 }
 
-fn renderMethod(self: *Renderer, method: SemanticAnalyzer.Type.Method) Error!void {
+fn renderMethod(self: *Renderer, method: Analyzer.Type.Method) Error!void {
     try self.render("\tpub fn ", .{});
     try self.renderMethodName(method.name);
     try self.render("(self: *@This()", .{});
@@ -161,7 +161,7 @@ fn renderMethod(self: *Renderer, method: SemanticAnalyzer.Type.Method) Error!voi
     try self.render("}});\n\t}}\n", .{});
 }
 
-fn renderProtocol(self: *Renderer, protocol: SemanticAnalyzer.Type.Protocol) Error!void {
+fn renderProtocol(self: *Renderer, protocol: Analyzer.Type.Protocol) Error!void {
     try self.render("pub const ", .{});
     try self.renderNamedName(protocol.name);
     try self.render(" = opaque {{\n", .{});
@@ -189,7 +189,7 @@ fn renderProtocol(self: *Renderer, protocol: SemanticAnalyzer.Type.Protocol) Err
     try self.render("}};\n\n", .{});
 }
 
-fn renderInterface(self: *Renderer, interface: SemanticAnalyzer.Type.Interface) Error!void {
+fn renderInterface(self: *Renderer, interface: Analyzer.Type.Interface) Error!void {
     try self.render("pub const ", .{});
     try self.renderNamedName(interface.name);
     try self.render(" = opaque {{\n", .{});
@@ -285,7 +285,7 @@ fn renderMethodName(self: *Renderer, name: []const u8) Error!void {
     }
 }
 
-fn renderType(self: *Renderer, @"type": SemanticAnalyzer.Type) Error!void {
+fn renderType(self: *Renderer, @"type": Analyzer.Type) Error!void {
     switch (@"type") {
         .void => try self.render("void", .{}),
         .pointer => |p| {

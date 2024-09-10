@@ -1,4 +1,4 @@
-const SemanticAnalyzer = @This();
+const Analyzer = @This();
 
 const std = @import("std");
 const mem = std.mem;
@@ -8,7 +8,7 @@ const meta = std.meta;
 const Tag = meta.Tag;
 const TagPayload = meta.TagPayload;
 
-const ASTNode = @import("ASTNode.zig");
+const AstNode = @import("AstNode.zig");
 
 arena: ArenaAllocator,
 type_table: Type.Table,
@@ -574,12 +574,12 @@ pub const Options = struct {
     allocator: Allocator,
     framework: []const u8,
 };
-pub fn run(ast: ASTNode, options: SemanticAnalyzer.Options) Error!SemanticAnalyzer {
+pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
     if (ast.kind != .TranslationUnitDecl) {
         return error.UnexpectedKind;
     }
 
-    var self = SemanticAnalyzer{
+    var self = Analyzer{
         .arena = ArenaAllocator.init(options.allocator),
         .type_table = Type.Table.init(options.allocator),
         .framework = options.framework,
@@ -638,7 +638,7 @@ pub fn run(ast: ASTNode, options: SemanticAnalyzer.Options) Error!SemanticAnalyz
     return self;
 }
 
-fn print(self: SemanticAnalyzer) void {
+fn print(self: Analyzer) void {
     var iter = self.declerations.iterator();
     while (iter.next()) |e| {
         const value = e.value_ptr;
@@ -715,19 +715,19 @@ fn print(self: SemanticAnalyzer) void {
     }
 }
 
-fn unexpectedKind(comptime expected: []const ASTNode.Kind, found: ASTNode.Kind) Error!void {
+fn unexpectedKind(comptime expected: []const AstNode.Kind, found: AstNode.Kind) Error!void {
     std.debug.print("Expected '{any}', found '{}'.\n", .{ expected, found });
     return error.UnexpectedKind;
 }
 
-fn expectsKind(comptime expects: []const ASTNode.Kind, found: ASTNode.Kind) Error!void {
+fn expectsKind(comptime expects: []const AstNode.Kind, found: AstNode.Kind) Error!void {
     inline for (expects) |kind| {
         if (kind == found) return;
     }
     return unexpectedKind(expects, found);
 }
 
-fn analyzeObjCMethod(self: *SemanticAnalyzer, node: ASTNode) Error!Type.Method {
+fn analyzeObjCMethod(self: *Analyzer, node: AstNode) Error!Type.Method {
     try expectsKind(&.{.ObjCMethodDecl}, node.kind);
 
     var params = try std.ArrayList(Type.Method.Param).initCapacity(self.arena.allocator(), node.inner.len);
@@ -788,7 +788,7 @@ fn analyzeObjCMethod(self: *SemanticAnalyzer, node: ASTNode) Error!Type.Method {
     };
 }
 
-fn analyzeObjCProperty(self: *SemanticAnalyzer, node: ASTNode) Error!Type.Property {
+fn analyzeObjCProperty(self: *Analyzer, node: AstNode) Error!Type.Property {
     try expectsKind(&.{.ObjCPropertyDecl}, node.kind);
 
     return .{
@@ -797,7 +797,7 @@ fn analyzeObjCProperty(self: *SemanticAnalyzer, node: ASTNode) Error!Type.Proper
     };
 }
 
-fn analyzeObjCProtocol(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
+fn analyzeObjCProtocol(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.ObjCProtocolDecl}, node.kind);
 
     if (node.previousDecl.len > 0) {
@@ -843,7 +843,7 @@ fn analyzeObjCProtocol(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
     };
 }
 
-fn analyzeObjCInterface(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
+fn analyzeObjCInterface(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.ObjCInterfaceDecl}, node.kind);
 
     if (node.previousDecl.len > 0) {
@@ -907,7 +907,7 @@ fn analyzeObjCInterface(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
     };
 }
 
-fn analyzeTypedef(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
+fn analyzeTypedef(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.TypedefDecl}, node.kind);
 
     if (node.previousDecl.len > 0) {
@@ -963,12 +963,12 @@ fn analyzeTypedef(self: *SemanticAnalyzer, node: ASTNode) Error!?Type {
     };
 }
 
-fn analyzeBuiltinType(self: *SemanticAnalyzer, node: ASTNode) Error!Type {
+fn analyzeBuiltinType(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.BuiltinType}, node.kind);
     return Type.parseFromString(self.arena.allocator(), node.type.?.qualType);
 }
 
-fn analyzeElaboratedType(self: *SemanticAnalyzer, node: ASTNode) Error!Type {
+fn analyzeElaboratedType(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.ElaboratedType}, node.kind);
 
     var result: ?Type = null;
@@ -995,7 +995,7 @@ fn analyzeElaboratedType(self: *SemanticAnalyzer, node: ASTNode) Error!Type {
     return result orelse .{ .void = {} };
 }
 
-fn analyzeRecordDecl(self: *SemanticAnalyzer, node: ASTNode) Error!Type {
+fn analyzeRecordDecl(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.RecordDecl}, node.kind);
     _ = self;
 
