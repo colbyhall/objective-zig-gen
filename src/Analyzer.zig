@@ -13,6 +13,7 @@ const AstNode = @import("AstNode.zig");
 arena: ArenaAllocator,
 type_table: Type.Table,
 framework: []const u8,
+unhandled_kinds: std.StringHashMap(std.ArrayList(AstNode.Kind)),
 
 pub const Type = union(enum) {
     pub const Int = struct {
@@ -513,58 +514,6 @@ pub const Type = union(enum) {
         const tokens = try Lexer.run(allocator, string);
         return Parser.run(allocator, tokens);
     }
-
-    fn print(self: Type) void {
-        switch (self) {
-            .void => std.debug.print("void", .{}),
-            .uint64_t => std.debug.print("uint164_t", .{}),
-            .instance_type => std.debug.print("@This()*", .{}),
-            .pointer => |p| {
-                if (p.nullable > 0) {
-                    std.debug.print("?", .{});
-                }
-                std.debug.print("*", .{});
-                if (p.@"const" > 0) {
-                    std.debug.print("const ", .{});
-                }
-                p.type.print();
-            },
-            .declared => |d| {
-                if (d.nullable > 0) {
-                    std.debug.print("?", .{});
-                }
-                std.debug.print("{s}", .{d.name});
-                if (d.params.len > 0) {
-                    std.debug.print("(", .{});
-                    for (d.params, 0..) |p, index| {
-                        p.print();
-                        if (index < d.params.len - 1) {
-                            std.debug.print(", ", .{});
-                        }
-                    }
-                    std.debug.print(")", .{});
-                }
-            },
-            .block => |b| {
-                if (b.nullable > 0) {
-                    std.debug.print("?", .{});
-                }
-                std.debug.print("* const ", .{});
-                b.function.print();
-            },
-            .function => |f| {
-                std.debug.print("fn(", .{});
-                for (f.params, 0..) |param, index| {
-                    param.print();
-                    if (index < f.params.len - 1) {
-                        std.debug.print(", ", .{});
-                    }
-                }
-                std.debug.print(") ", .{});
-                f.return_type.print();
-            },
-        }
-    }
 };
 
 pub const Error = error{
@@ -575,14 +524,13 @@ pub const Options = struct {
     framework: []const u8,
 };
 pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
-    if (ast.kind != .TranslationUnitDecl) {
-        return error.UnexpectedKind;
-    }
+    try expectsKind(&.{.TranslationUnitDecl}, ast.kind);
 
     var self = Analyzer{
         .arena = ArenaAllocator.init(options.allocator),
         .type_table = Type.Table.init(options.allocator),
         .framework = options.framework,
+        .unhandled_kinds = std.StringHashMap(std.ArrayList(AstNode.Kind)).init(options.allocator),
     };
 
     for (ast.inner) |node| {
@@ -597,7 +545,6 @@ pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
         var entry: ?Type = null;
         switch (node.kind) {
             .TypedefDecl => {
-                std.debug.print("Typedef: {s}, Framework: {s}\n", .{ node.name, node.gatherFramework().? });
                 entry = try self.analyzeTypedef(node);
             },
             .ObjCInterfaceDecl => {
@@ -606,12 +553,15 @@ pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
             .ObjCProtocolDecl => {
                 entry = try self.analyzeObjCProtocol(node);
             },
-            .ObjCCategoryDecl => {},
-            .VarDecl => {},
-            .FunctionDecl => {},
-            .RecordDecl => {},
-            .EnumDecl => {},
-            .EmptyDecl => {},
+            .ObjCCategoryDecl,
+            .VarDecl,
+            .FunctionDecl,
+            .RecordDecl,
+            .EnumDecl,
+            .EmptyDecl,
+            => {
+                try self.unhandledKind(@src().fn_name, node.kind);
+            },
             else => try unexpectedKind(&.{
                 .TypedefDecl,
                 .ObjCInterfaceDecl,
@@ -638,83 +588,6 @@ pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
     return self;
 }
 
-fn print(self: Analyzer) void {
-    var iter = self.declerations.iterator();
-    while (iter.next()) |e| {
-        const value = e.value_ptr;
-        std.debug.print("{s}:\n", .{value.name});
-        switch (value.type) {
-            .protocol => |p| {
-                std.debug.print("\tInherits:\n", .{});
-                for (p.inherits) |i| {
-                    std.debug.print("\t\t{s}\n", .{i});
-                }
-                std.debug.print("\tChildren:\n", .{});
-                for (p.children) |c| {
-                    switch (c) {
-                        .method => |m| {
-                            var name = m.name;
-                            if (mem.indexOf(u8, name, ":")) |index| {
-                                name = name[0..index];
-                            }
-                            std.debug.print("\t\tfn {s}(", .{name});
-                            for (m.params, 0..) |param, index| {
-                                std.debug.print("{s}: ", .{param.name});
-                                param.type.print();
-                                if (index < m.params.len - 1) {
-                                    std.debug.print(", ", .{});
-                                }
-                            }
-                            std.debug.print(") ", .{});
-                            m.return_type.print();
-                            std.debug.print("\n", .{});
-                        },
-                        .property => |prop| {
-                            std.debug.print("\t\t{s}: ", .{prop.name});
-                            prop.type.print();
-                            std.debug.print("\n", .{});
-                        },
-                    }
-                }
-            },
-            .interface => |p| {
-                std.debug.print("\tProtocols:\n", .{});
-                for (p.protocols) |i| {
-                    std.debug.print("\t\t{s}\n", .{i});
-                }
-                std.debug.print("\tSuper: {s}\n", .{p.super});
-                std.debug.print("\tChildren:\n", .{});
-                for (p.children) |c| {
-                    switch (c) {
-                        .method => |m| {
-                            var name = m.name;
-                            if (mem.indexOf(u8, name, ":")) |index| {
-                                name = name[0..index];
-                            }
-                            std.debug.print("\t\tfn {s}(", .{name});
-                            for (m.params, 0..) |param, index| {
-                                std.debug.print("{s}: ", .{param.name});
-                                param.type.print();
-                                if (index < m.params.len - 1) {
-                                    std.debug.print(", ", .{});
-                                }
-                            }
-                            std.debug.print(") ", .{});
-                            m.return_type.print();
-                            std.debug.print("\n", .{});
-                        },
-                        .property => |prop| {
-                            std.debug.print("\t\t{s}: ", .{prop.name});
-                            prop.type.print();
-                            std.debug.print("\n", .{});
-                        },
-                    }
-                }
-            },
-        }
-    }
-}
-
 fn unexpectedKind(comptime expected: []const AstNode.Kind, found: AstNode.Kind) Error!void {
     std.debug.print("Expected '{any}', found '{}'.\n", .{ expected, found });
     return error.UnexpectedKind;
@@ -727,13 +600,34 @@ fn expectsKind(comptime expects: []const AstNode.Kind, found: AstNode.Kind) Erro
     return unexpectedKind(expects, found);
 }
 
+fn unhandledKind(self: *Analyzer, comptime caller_fn: []const u8, child: AstNode.Kind) !void {
+    const get_or_put = try self.unhandled_kinds.getOrPut(caller_fn);
+    if (!get_or_put.found_existing) {
+        get_or_put.value_ptr.* = std.ArrayList(AstNode.Kind).init(self.unhandled_kinds.allocator);
+    }
+
+    for (get_or_put.value_ptr.items) |kind| {
+        if (child == kind) return;
+    }
+
+    try get_or_put.value_ptr.append(child);
+    std.debug.print("While analyzing '{s}', Analyzer.{s} does not handle child of '{}'.\n", .{ self.framework, caller_fn, child });
+}
+
 fn analyzeObjCMethod(self: *Analyzer, node: AstNode) Error!Type.Method {
     try expectsKind(&.{.ObjCMethodDecl}, node.kind);
 
     var params = try std.ArrayList(Type.Method.Param).initCapacity(self.arena.allocator(), node.inner.len);
     for (node.inner) |child| {
         switch (child.kind) {
-            .ParmVarDecl => {},
+            .ParmVarDecl => {
+                const name = child.name;
+                const @"type" = try Type.parseFromString(self.arena.allocator(), child.type.?.qualType);
+                try params.append(.{
+                    .name = try self.arena.allocator().dupe(u8, name),
+                    .type = @"type",
+                });
+            },
             .AvailabilityAttr,
             .NSReturnsRetainedAttr,
             .SwiftAttrAttr,
@@ -749,7 +643,7 @@ fn analyzeObjCMethod(self: *Analyzer, node: AstNode) Error!Type.Method {
             .SwiftAsyncAttr,
             .DeprecatedAttr,
             => {
-                continue;
+                // NOTE: These have been deemed to not be releveant for binding generation. Ignore them completely.
             },
             else => try unexpectedKind(&.{
                 .ParmVarDecl,
@@ -769,13 +663,6 @@ fn analyzeObjCMethod(self: *Analyzer, node: AstNode) Error!Type.Method {
                 .DeprecatedAttr,
             }, child.kind),
         }
-
-        const name = child.name;
-        const @"type" = try Type.parseFromString(self.arena.allocator(), child.type.?.qualType);
-        try params.append(.{
-            .name = try self.arena.allocator().dupe(u8, name),
-            .type = @"type",
-        });
     }
 
     const return_type = try self.arena.allocator().create(Type);
@@ -819,10 +706,13 @@ fn analyzeObjCProtocol(self: *Analyzer, node: AstNode) Error!?Type {
             .ObjCPropertyDecl => {
                 try children.append(.{ .property = try self.analyzeObjCProperty(child) });
             },
-            .VisibilityAttr => {},
-            .AvailabilityAttr => {},
-            .SwiftNameAttr => {},
-            .SwiftPrivateAttr => {},
+            .VisibilityAttr,
+            .AvailabilityAttr,
+            .SwiftNameAttr,
+            .SwiftPrivateAttr,
+            => {
+                // NOTE: These have been deemed to not be releveant for binding generation. Ignore them completely.
+            },
             else => try unexpectedKind(&.{
                 .ObjCMethodDecl,
                 .ObjCPropertyDecl,
@@ -846,6 +736,7 @@ fn analyzeObjCProtocol(self: *Analyzer, node: AstNode) Error!?Type {
 fn analyzeObjCInterface(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.ObjCInterfaceDecl}, node.kind);
 
+    // If there is anything in previous decl then this is a redecleration.
     if (node.previousDecl.len > 0) {
         return null;
     }
@@ -865,18 +756,22 @@ fn analyzeObjCInterface(self: *Analyzer, node: AstNode) Error!?Type {
             .ObjCPropertyDecl => {
                 try children.append(.{ .property = try self.analyzeObjCProperty(child) });
             },
-            .ObjCTypeParamDecl => {
-                // std.debug.print("{s}\n", .{child.name});
+            .ObjCTypeParamDecl,
+            .ObjCIvarDecl,
+            .RecordDecl,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
             },
-            .ObjCIvarDecl => {},
-            .RecordDecl => {},
-            .VisibilityAttr => {},
-            .AvailabilityAttr => {},
-            .SwiftPrivateAttr => {},
-            .SwiftNameAttr => {},
-            .ObjCExceptionAttr => {},
-            .ArcWeakrefUnavailableAttr => {},
-            .ObjCRootClassAttr => {},
+            .VisibilityAttr,
+            .AvailabilityAttr,
+            .SwiftPrivateAttr,
+            .SwiftNameAttr,
+            .ObjCExceptionAttr,
+            .ArcWeakrefUnavailableAttr,
+            .ObjCRootClassAttr,
+            => {
+                // NOTE: These have been deemed to not be releveant for binding generation. Ignore them completely.
+            },
             else => try unexpectedKind(&.{
                 .ObjCMethodDecl,
                 .ObjCPropertyDecl,
@@ -925,17 +820,22 @@ fn analyzeTypedef(self: *Analyzer, node: AstNode) Error!?Type {
             },
             .PointerType,
             .ConstantArrayType,
+            .BlockPointerType,
             .ObjCBridgeAttr,
+            .ObjCObjectPointerType,
+            .FunctionProtoType,
+            .QualType,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
+            },
             .SwiftNewTypeAttr,
             .AvailabilityAttr,
             .SwiftNameAttr,
-            .ObjCObjectPointerType,
-            .BlockPointerType,
-            .FunctionProtoType,
-            .QualType,
             .SwiftBridgedTypedefAttr,
             .FullComment,
-            => {},
+            => {
+                // NOTE: These have been deemed to not be releveant for binding generation. Ignore them completely.
+            },
             else => try unexpectedKind(&.{
                 .BuiltinType,
                 .ElaboratedType,
@@ -977,12 +877,13 @@ fn analyzeElaboratedType(self: *Analyzer, node: AstNode) Error!Type {
             .RecordDecl => {
                 result = try self.analyzeRecordDecl(child);
             },
-            .TypedefType => {
-                std.debug.print("{s}\n", .{child.type.?.qualType});
+            .TypedefType,
+            .EnumDecl,
+            .EnumType,
+            .RecordType,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
             },
-            .EnumDecl => {},
-            .EnumType => {},
-            .RecordType => {},
             else => try unexpectedKind(&.{
                 .RecordDecl,
                 .TypedefType,
@@ -997,10 +898,9 @@ fn analyzeElaboratedType(self: *Analyzer, node: AstNode) Error!Type {
 
 fn analyzeRecordDecl(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.RecordDecl}, node.kind);
-    _ = self;
 
     for (node.inner) |child| {
-        std.debug.print("{s}\n", .{child.name});
+        try self.unhandledKind(@src().fn_name, child.kind);
     }
     return .{
         .void = {},

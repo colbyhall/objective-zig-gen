@@ -157,6 +157,11 @@ pub fn main() !void {
             const manifest = possible_manifest.?;
             defer manifest.deinit();
 
+            if (manifest.value.len == 0) {
+                std.debug.print("Found no frameworks in manifest '{s}'.\n", .{result.path});
+                return;
+            }
+
             // First thing to do is to validate that any framework dependency is listed in the manifest
             var frameworks = std.StringHashMap(Framework).init(allocator);
             defer frameworks.deinit();
@@ -181,11 +186,21 @@ pub fn main() !void {
                 },
             );
 
+            std.debug.print("Parsed manifest and found {} frameworks.\n", .{manifest.value.len});
+            for (manifest.value, 0..) |framework, index| {
+                std.debug.print("  {}. {s}\n", .{ index + 1, framework.name });
+            }
+
             var pool: std.Thread.Pool = undefined;
             try pool.init(.{
                 .allocator = allocator,
             });
             defer pool.deinit();
+            std.debug.print("\nStarted thread pool with {} threads.\n\n", .{pool.threads.len});
+
+            std.debug.print("Starting to parse and analyze frameworks.\n", .{});
+
+            var now = try std.time.Instant.now();
 
             const analyzers = try allocator.alloc(Analyzer, manifest.value.len);
             var frameworks_semantic_analysis = std.Thread.WaitGroup{};
@@ -232,6 +247,9 @@ pub fn main() !void {
             }
             pool.waitAndWork(&frameworks_semantic_analysis);
 
+            const after_parse_and_analyze = (try std.time.Instant.now()).since(now);
+            std.debug.print("Finished parsing and analyzing frameworks after {d:.2}s.\n\n", .{@as(f64, @floatFromInt(after_parse_and_analyze)) / @as(f64, @floatFromInt(@as(u64, std.time.ns_per_s)))});
+
             const cwd = std.fs.cwd();
 
             // TODO: Add a way to specify the output option.
@@ -252,6 +270,9 @@ pub fn main() !void {
                 _ = try objc_file.write(@embedFile("objc.zig"));
             }
 
+            std.debug.print("Starting to render frameworks.\n", .{});
+
+            now = try std.time.Instant.now();
             var frameworks_render = std.Thread.WaitGroup{};
             for (analyzers) |*analyzer| {
                 pool.spawnWg(&frameworks_render, renderFramework, .{
@@ -264,6 +285,9 @@ pub fn main() !void {
                 });
             }
             pool.waitAndWork(&frameworks_render);
+
+            const after_render = (try std.time.Instant.now()).since(now);
+            std.debug.print("Finished rendering frameworks after {d:.2}ms.\n", .{@as(f64, @floatFromInt(after_render)) / @as(f64, @floatFromInt(@as(u64, std.time.ns_per_ms)))});
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
@@ -306,14 +330,6 @@ fn parseAndAnalyzeFrameworkInner(info: FrameworkParseAndAnalyzeInfo) !void {
 
     // HACK: Can't figure out how to not get clang to produce this file.
     std.fs.cwd().deleteFile("a.out") catch {};
-
-    std.debug.print(
-        "{s} produced {d:.2} of json.\n",
-        .{
-            info.framework.name,
-            std.fmt.fmtIntSizeBin(ast_json.stdout.len),
-        },
-    );
 
     const ast = (try parseJsonWithCustomErrorHandling(
         AstNode,
