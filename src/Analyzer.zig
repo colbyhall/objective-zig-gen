@@ -42,10 +42,24 @@ pub const Type = union(enum) {
         params: []const Type,
         return_type: *const Type,
     };
-    pub const Struct = struct {
+    pub const Record = struct {
         const Field = struct {
             name: []const u8,
-            type: *const Type,
+            type: Type,
+        };
+        const Kind = enum {
+            @"struct",
+            @"union",
+        };
+
+        name: []const u8,
+        kind: Kind,
+        fields: []const Field,
+    };
+    pub const Union = struct {
+        const Field = struct {
+            name: []const u8,
+            type: Type,
         };
 
         name: []const u8,
@@ -87,6 +101,10 @@ pub const Type = union(enum) {
         name: []const u8,
         inner: *const Type,
     };
+    pub const Array = struct {
+        type: *const Type,
+        length: u32,
+    };
 
     void,
     int: Int,
@@ -96,10 +114,11 @@ pub const Type = union(enum) {
     block: Block,
     function: Function,
     instance_type,
-    @"struct": Struct,
+    record: Record,
     protocol: Protocol,
     interface: Interface,
     typedef: Typedef,
+    array: Array,
 
     pub const Table = struct {
         pub const Named = struct {
@@ -115,6 +134,7 @@ pub const Type = union(enum) {
         protocols: std.StringArrayHashMap(Named),
         interfaces: std.StringArrayHashMap(Named),
         typedefs: std.StringArrayHashMap(Named),
+        records: std.StringArrayHashMap(Named),
 
         pub const Error = error{
             MultipleTypes,
@@ -125,6 +145,7 @@ pub const Type = union(enum) {
                 .protocols = std.StringArrayHashMap(Named).init(allocator),
                 .interfaces = std.StringArrayHashMap(Named).init(allocator),
                 .typedefs = std.StringArrayHashMap(Named).init(allocator),
+                .records = std.StringArrayHashMap(Named).init(allocator),
             };
         }
 
@@ -132,6 +153,7 @@ pub const Type = union(enum) {
             self.protocols.deinit();
             self.interfaces.deinit();
             self.typdefs.deinit();
+            self.records.deinit();
         }
 
         pub fn insert(self: *@This(), named: Named) @This().Error!void {
@@ -139,6 +161,7 @@ pub const Type = union(enum) {
                 .protocol => try self.protocols.put(named.type.protocol.name, named),
                 .interface => try self.interfaces.put(named.type.interface.name, named),
                 .typedef => try self.typedefs.put(named.type.typedef.name, named),
+                .record => try self.records.put(named.type.record.name, named),
                 else => @panic("Type is not accepted as named type."),
             }
         }
@@ -160,6 +183,12 @@ pub const Type = union(enum) {
                 }
                 result = i;
             }
+            if (self.records.get(name)) |i| {
+                if (result != null) {
+                    return error.MultipleTypes;
+                }
+                result = i;
+            }
             return result;
         }
 
@@ -173,6 +202,10 @@ pub const Type = union(enum) {
 
         pub fn lookupTypdef(self: @This(), name: []const u8) ?Named {
             return self.typdefs.get(name);
+        }
+
+        pub fn lookupRecord(self: @This(), name: []const u8) ?Named {
+            return self.records.get(name);
         }
     };
 
@@ -221,6 +254,10 @@ pub const Type = union(enum) {
             },
             .{
                 .string = "_Nullable",
+                .token = .{ .nullable = {} },
+            },
+            .{
+                .string = "_Null_unspecified",
                 .token = .{ .nullable = {} },
             },
             .{
@@ -511,6 +548,7 @@ pub const Type = union(enum) {
     };
 
     fn parseFromString(allocator: Allocator, string: []const u8) !@This() {
+        std.debug.print("{s}\n", .{string});
         const tokens = try Lexer.run(allocator, string);
         return Parser.run(allocator, tokens);
     }
@@ -545,7 +583,7 @@ pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
         var entry: ?Type = null;
         switch (node.kind) {
             .TypedefDecl => {
-                entry = try self.analyzeTypedef(node);
+                entry = try self.analyzeTypedefDecl(node);
             },
             .ObjCInterfaceDecl => {
                 entry = try self.analyzeObjCInterface(node);
@@ -553,10 +591,12 @@ pub fn run(ast: AstNode, options: Analyzer.Options) Error!Analyzer {
             .ObjCProtocolDecl => {
                 entry = try self.analyzeObjCProtocol(node);
             },
+            .RecordDecl => {
+                entry = try self.analyzeRecordDecl(node);
+            },
             .ObjCCategoryDecl,
             .VarDecl,
             .FunctionDecl,
-            .RecordDecl,
             .EnumDecl,
             .EmptyDecl,
             => {
@@ -687,7 +727,7 @@ fn analyzeObjCProperty(self: *Analyzer, node: AstNode) Error!Type.Property {
 fn analyzeObjCProtocol(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.ObjCProtocolDecl}, node.kind);
 
-    if (node.previousDecl.len > 0) {
+    if (node.inner.len == 0) {
         return null;
     }
 
@@ -736,8 +776,7 @@ fn analyzeObjCProtocol(self: *Analyzer, node: AstNode) Error!?Type {
 fn analyzeObjCInterface(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.ObjCInterfaceDecl}, node.kind);
 
-    // If there is anything in previous decl then this is a redecleration.
-    if (node.previousDecl.len > 0) {
+    if (node.inner.len == 0) {
         return null;
     }
 
@@ -802,7 +841,7 @@ fn analyzeObjCInterface(self: *Analyzer, node: AstNode) Error!?Type {
     };
 }
 
-fn analyzeTypedef(self: *Analyzer, node: AstNode) Error!?Type {
+fn analyzeTypedefDecl(self: *Analyzer, node: AstNode) Error!?Type {
     try expectsKind(&.{.TypedefDecl}, node.kind);
 
     if (node.previousDecl.len > 0) {
@@ -818,8 +857,12 @@ fn analyzeTypedef(self: *Analyzer, node: AstNode) Error!?Type {
             .ElaboratedType => {
                 inner.* = try self.analyzeElaboratedType(child);
             },
-            .PointerType,
-            .ConstantArrayType,
+            .PointerType => {
+                inner.* = try self.analyzePointerType(child);
+            },
+            .ConstantArrayType => {
+                inner.* = try self.analyzeConstantArrayType(child);
+            },
             .BlockPointerType,
             .ObjCBridgeAttr,
             .ObjCObjectPointerType,
@@ -863,6 +906,67 @@ fn analyzeTypedef(self: *Analyzer, node: AstNode) Error!?Type {
     };
 }
 
+fn analyzeConstantArrayType(self: *Analyzer, node: AstNode) Error!Type {
+    try expectsKind(&.{.ConstantArrayType}, node.kind);
+
+    std.debug.assert(node.inner.len == 1);
+    const child = node.inner[0];
+
+    const @"type" = try self.arena.allocator().create(Type);
+    switch (child.kind) {
+        .BuiltinType => {
+            @"type".* = try self.analyzeBuiltinType(child);
+        },
+        .ElaboratedType => {
+            @"type".* = try self.analyzeElaboratedType(child);
+        },
+        else => try unexpectedKind(&.{
+            .BuiltinType,
+            .ElaboratedType,
+        }, child.kind),
+    }
+
+    return .{
+        .array = .{
+            .type = @"type",
+            .length = node.size.?,
+        },
+    };
+}
+
+fn analyzeTypedefType(self: *Analyzer, node: AstNode) Error!Type {
+    try expectsKind(&.{.TypedefType}, node.kind);
+
+    var result: ?Type = null;
+    for (node.inner) |child| {
+        switch (child.kind) {
+            .BuiltinType => {
+                result = try self.analyzeBuiltinType(child);
+            },
+            .ElaboratedType => {
+                result = try self.analyzeElaboratedType(child);
+            },
+            .PointerType => {
+                result = try self.analyzePointerType(child);
+            },
+            .ConstantArrayType,
+            .FunctionProtoType,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
+            },
+            else => try unexpectedKind(&.{
+                .BuiltinType,
+                .ElaboratedType,
+                .PointerType,
+                .ConstantArrayType,
+                .FunctionProtoType,
+            }, child.kind),
+        }
+    }
+
+    return .{ .void = {} };
+}
+
 fn analyzeBuiltinType(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.BuiltinType}, node.kind);
     return Type.parseFromString(self.arena.allocator(), node.type.?.qualType);
@@ -877,10 +981,14 @@ fn analyzeElaboratedType(self: *Analyzer, node: AstNode) Error!Type {
             .RecordDecl => {
                 result = try self.analyzeRecordDecl(child);
             },
-            .TypedefType,
+            .TypedefType => {
+                result = try self.analyzeTypedefType(child);
+            },
+            .RecordType => {
+                result = try self.analyzeRecordType(child);
+            },
             .EnumDecl,
             .EnumType,
-            .RecordType,
             => {
                 try self.unhandledKind(@src().fn_name, child.kind);
             },
@@ -899,10 +1007,89 @@ fn analyzeElaboratedType(self: *Analyzer, node: AstNode) Error!Type {
 fn analyzeRecordDecl(self: *Analyzer, node: AstNode) Error!Type {
     try expectsKind(&.{.RecordDecl}, node.kind);
 
+    var fields = std.ArrayList(Type.Record.Field).init(self.arena.allocator());
     for (node.inner) |child| {
-        try self.unhandledKind(@src().fn_name, child.kind);
+        switch (child.kind) {
+            .FieldDecl => {
+                try fields.append(.{
+                    .name = try self.arena.allocator().dupe(u8, child.name),
+                    .type = try Type.parseFromString(self.arena.allocator(), child.type.?.qualType),
+                });
+
+                for (child.inner) |c| {
+                    try self.unhandledKind(@src().fn_name, c.kind);
+                }
+            },
+            .RecordDecl,
+            .IndirectFieldDecl,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
+            },
+            .MaxFieldAlignmentAttr,
+            .ObjCBridgeAttr,
+            .ObjCBridgeMutableAttr,
+            .ObjCBoxableAttr,
+            .AvailabilityAttr,
+            => {},
+            else => try unexpectedKind(&.{
+                .FieldDecl,
+                .MaxFieldAlignmentAttr,
+                .ObjCBridgeAttr,
+                .ObjCBridgeMutableAttr,
+                .RecordDecl,
+                .IndirectFieldDecl,
+                .AvailabilityAttr,
+            }, child.kind),
+        }
     }
+
     return .{
-        .void = {},
+        .record = .{
+            .name = try self.arena.allocator().dupe(u8, node.name),
+            .kind = if (mem.eql(u8, node.tagUsed, "struct")) .@"struct" else .@"union",
+            .fields = fields.items,
+        },
     };
+}
+
+fn analyzeRecordType(self: *Analyzer, node: AstNode) Error!Type {
+    try expectsKind(&.{.RecordType}, node.kind);
+
+    _ = self;
+
+    for (node.inner) |child| {
+        switch (child.kind) {
+            else => try unexpectedKind(&.{}, child.kind),
+        }
+    }
+
+    return .{ .void = {} };
+}
+
+fn analyzePointerType(self: *Analyzer, node: AstNode) Error!Type {
+    try expectsKind(&.{.PointerType}, node.kind);
+
+    var result: ?Type = null;
+    for (node.inner) |child| {
+        switch (child.kind) {
+            .ElaboratedType => {
+                result = try self.analyzeElaboratedType(child);
+            },
+            .BuiltinType => {
+                result = try self.analyzeBuiltinType(child);
+            },
+            .QualType,
+            .ParenType,
+            => {
+                try self.unhandledKind(@src().fn_name, child.kind);
+            },
+            else => try unexpectedKind(&.{
+                .ElaboratedType,
+                .BuiltinType,
+                .QualType,
+            }, child.kind),
+        }
+    }
+
+    return .{ .void = {} };
 }

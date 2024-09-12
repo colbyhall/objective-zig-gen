@@ -168,6 +168,10 @@ pub const Kind = enum {
     VerbatimLineComment,
     ParamCommandComment,
     InlineCommandComment,
+    HTMLStartTagComment,
+    HTMLEndTagComment,
+    VerbatimBlockComment,
+    VerbatimBlockLineComment,
 };
 
 // std attributes of the AST node.
@@ -183,6 +187,7 @@ renderKind: []const u8 = &.{},
 
 // Extended properties for detailed AST analysis and code generation.
 name: []const u8 = &.{}, // Name associated with this node, if applicable.
+closeName: []const u8 = &.{},
 mangledName: []const u8 = &.{}, // Mangled name for linkage purposes, if applicable.
 returnType: ?Type = null, // Return type of the node if it represents a function.
 fixedUnderlyingType: ?Type = null, // Fixed underlying type information, typically used for typedefs.

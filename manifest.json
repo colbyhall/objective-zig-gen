@@ -1,0 +1,68 @@
+[
+    {
+        "name": "CoreFoundation",
+        "output_file": "cf",
+
+        "remove_prefix": "CF"
+    },
+    {
+        "name": "Security",
+        "output_file": "security",
+
+        "dependencies": [
+            "CoreFoundation"
+        ]
+    },
+    {
+        "name": "IOKit",
+        "output_file": "iokit",
+
+        "header_override": "IOKitLib.h",
+        "dependencies": [
+            "CoreFoundation"
+        ]
+    },
+    {
+        "name": "DiskArbitration",
+        "output_file": "disk_arbitration",
+
+        "dependencies": [
+            "CoreFoundation",
+            "IOKit"
+        ]
+    },
+    {
+        "name": "CFNetwork",
+        "output_file": "cfnetwork",
+
+        "dependencies": [
+            "CoreFoundation"
+        ]
+    },
+        {
+        "name": "CoreServices",
+        "output_file": "cs",
+
+        "dependencies": [
+            "CoreFoundation",
+            "IOKit",
+            "DiskArbitration",
+            "CFNetwork",
+            "Security"
+        ]
+    },
+    {
+        "name": "Foundation",
+        "output_file": "ns",
+
+        "remove_prefix": "NS",
+        "dependencies": [
+            "CoreServices",
+            "CoreFoundation",
+            "Security",
+            "IOKit",
+            "DiskArbitration",
+            "CFNetwork"
+        ]
+    }
+]

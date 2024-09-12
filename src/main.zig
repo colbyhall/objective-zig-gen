@@ -11,8 +11,10 @@ pub const Framework = struct {
     name: []const u8,
     output_file: []const u8,
 
+    // Optional fields
     dependencies: []const []const u8 = &.{},
     remove_prefix: []const u8 = &.{},
+    header_override: ?[]const u8 = null,
 };
 const Manifest = []const Framework;
 
@@ -205,14 +207,27 @@ pub fn main() !void {
             const analyzers = try allocator.alloc(Analyzer, manifest.value.len);
             var frameworks_semantic_analysis = std.Thread.WaitGroup{};
             for (manifest.value, 0..) |framework, index| {
-                const path_to_header = try std.fmt.allocPrint(
-                    allocator,
-                    "{s}.framework/Headers/{s}.h",
-                    .{
-                        framework.name,
-                        framework.name,
-                    },
-                );
+                var path_to_header: []const u8 = undefined;
+                if (framework.header_override) |override| {
+                    path_to_header = try std.fmt.allocPrint(
+                        allocator,
+                        "{s}.framework/Headers/{s}",
+                        .{
+                            framework.name,
+                            override,
+                        },
+                    );
+                } else {
+                    path_to_header = try std.fmt.allocPrint(
+                        allocator,
+                        "{s}.framework/Headers/{s}.h",
+                        .{
+                            framework.name,
+                            framework.name,
+                        },
+                    );
+                }
+
                 // Create the path based on the framework name.
                 const path = try std.fs.path.join(allocator, &.{
                     frameworks_path,
