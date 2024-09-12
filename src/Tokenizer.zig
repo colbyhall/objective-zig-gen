@@ -468,29 +468,3 @@ pub fn next(self: *Tokenizer) Token {
     result.loc.end = self.offset;
     return result;
 }
-
-test {
-    _ =
-        \\#include <stdio.h>
-        \\
-        \\// FOO BAR
-        \\/* TESTING 123 */
-        \\int main(int argc, char** argv) {
-        \\  printf("Hello World\n");
-        \\  const char c = '\t';
-        \\  return 0;
-        \\}
-    ;
-    const c = @embedFile("ngx_http.c.txt");
-    const now = try std.time.Instant.now();
-    var tokenizer = Tokenizer.init(c);
-    while (true) {
-        const token = tokenizer.next();
-        if (token.tag == .eof) break;
-    }
-    const since = (try std.time.Instant.now()).since(now);
-
-    const seconds = @as(f64, @floatFromInt(since)) / @as(f64, @floatFromInt(@as(u64, std.time.ns_per_s)));
-    const mb = @as(f64, @floatFromInt(c.len)) / (1024 * 1024);
-    std.debug.print("{d:.2}MB/s\n", .{mb / seconds});
-}
