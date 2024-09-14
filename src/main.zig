@@ -1,11 +1,10 @@
 const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const fmt = std.fmt;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
-const Analyzer = @import("Analyzer.zig");
-const AstNode = @import("AstNode.zig");
-const Renderer = @import("Renderer.zig");
+const Preprocessor = @import("preprocessor.zig");
 
 pub const Framework = struct {
     name: []const u8,
@@ -187,175 +186,55 @@ pub fn main() !void {
                     "System/Library/Frameworks/",
                 },
             );
+            defer allocator.free(frameworks_path);
 
             std.debug.print("Parsed manifest and found {} frameworks.\n", .{manifest.value.len});
             for (manifest.value, 0..) |framework, index| {
                 std.debug.print("  {}. {s}\n", .{ index + 1, framework.name });
             }
 
-            var pool: std.Thread.Pool = undefined;
-            try pool.init(.{
-                .allocator = allocator,
-            });
-            defer pool.deinit();
-            std.debug.print("\nStarted thread pool with {} threads.\n\n", .{pool.threads.len});
-
-            std.debug.print("Starting to parse and analyze frameworks.\n", .{});
-
-            var now = try std.time.Instant.now();
-
-            const analyzers = try allocator.alloc(Analyzer, manifest.value.len);
-            var frameworks_semantic_analysis = std.Thread.WaitGroup{};
-            for (manifest.value, 0..) |framework, index| {
-                var path_to_header: []const u8 = undefined;
-                if (framework.header_override) |override| {
-                    path_to_header = try std.fmt.allocPrint(
-                        allocator,
-                        "{s}.framework/Headers/{s}",
-                        .{
-                            framework.name,
-                            override,
-                        },
-                    );
-                } else {
-                    path_to_header = try std.fmt.allocPrint(
-                        allocator,
-                        "{s}.framework/Headers/{s}.h",
-                        .{
-                            framework.name,
-                            framework.name,
-                        },
-                    );
-                }
-
-                // Create the path based on the framework name.
-                const path = try std.fs.path.join(allocator, &.{
-                    frameworks_path,
-                    path_to_header,
-                });
-
-                // Check to see if the header of the framework exist.
-                std.fs.accessAbsolute(path, .{}) catch |err| {
-                    std.debug.print(
-                        "Failed to access framework '{s}' header at path '{s}' due to {}",
-                        .{
-                            framework.name,
-                            path,
-                            err,
-                        },
-                    );
-                    return;
-                };
-
-                pool.spawnWg(
-                    &frameworks_semantic_analysis,
-                    parseAndAnalyzeFramework,
-                    .{
-                        .{
-                            .allocator = allocator,
-                            .framework = framework,
-                            .path_to_header = path,
-                            .result = &analyzers[index],
-                        },
-                    },
-                );
-            }
-            pool.waitAndWork(&frameworks_semantic_analysis);
-
-            const after_parse_and_analyze = (try std.time.Instant.now()).since(now);
-            std.debug.print("Finished parsing and analyzing frameworks after {d:.2}s.\n\n", .{@as(f64, @floatFromInt(after_parse_and_analyze)) / @as(f64, @floatFromInt(@as(u64, std.time.ns_per_s)))});
-
-            const cwd = std.fs.cwd();
-
-            // TODO: Add a way to specify the output option.
-            const output_path = "output";
-            cwd.makeDir(output_path) catch |err| {
-                if (err != std.fs.Dir.MakeError.PathAlreadyExists) {
-                    return err;
-                }
-            };
-
-            var output_dir = try cwd.openDir(output_path, .{});
-            defer output_dir.close();
-
-            // Copy about the objc runtime to the output directory.
-            {
-                var objc_file = try output_dir.createFile("objc.zig", .{});
-                defer objc_file.close();
-                _ = try objc_file.write(@embedFile("objc.zig"));
-            }
-
-            std.debug.print("Starting to render frameworks.\n", .{});
-
-            now = try std.time.Instant.now();
-            var frameworks_render = std.Thread.WaitGroup{};
-            for (analyzers) |*analyzer| {
-                pool.spawnWg(&frameworks_render, renderFramework, .{
-                    .{
-                        .allocator = allocator,
-                        .output_dir = &output_dir,
-                        .frameworks = &frameworks,
-                        .analyzer = analyzer,
-                    },
+            for (manifest.value) |framework| {
+                try preprocessFramework(.{
+                    .allocator = allocator,
+                    .sdk_path = sdk_path,
+                    .framework = framework,
                 });
             }
-            pool.waitAndWork(&frameworks_render);
-
-            const after_render = (try std.time.Instant.now()).since(now);
-            std.debug.print("Finished rendering frameworks after {d:.2}ms.\n", .{@as(f64, @floatFromInt(after_render)) / @as(f64, @floatFromInt(@as(u64, std.time.ns_per_ms)))});
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
     }
 }
 
-fn renderFramework(options: Renderer.Options) void {
-    Renderer.run(options) catch unreachable;
-}
-
-const FrameworkParseAndAnalyzeInfo = struct {
+const PreprocessInfo = struct {
     allocator: Allocator,
+    sdk_path: []const u8,
     framework: Framework,
-    path_to_header: []const u8,
-    result: *Analyzer,
 };
-fn parseAndAnalyzeFramework(info: FrameworkParseAndAnalyzeInfo) void {
-    parseAndAnalyzeFrameworkInner(info) catch unreachable;
-}
-fn parseAndAnalyzeFrameworkInner(info: FrameworkParseAndAnalyzeInfo) !void {
-    const args = &[_][]const u8{
-        "zig",
-        "c++",
-        "-fsyntax-only",
-        "-Xclang",
-        "-ast-dump=json",
-        "-nostdinc",
-        "-x",
-        "objective-c",
-        info.path_to_header,
+fn preprocessFramework(info: PreprocessInfo) !void {
+    const libc = try fmt.allocPrint(info.allocator, "{s}/usr/include", .{info.sdk_path});
+    defer info.allocator.free(libc);
+
+    const path = blk: {
+        if (info.framework.header_override) |header| {
+            break :blk try fmt.allocPrint(info.allocator, "{s}/{s}", .{ info.framework.name, header });
+        }
+        break :blk try fmt.allocPrint(info.allocator, "{s}/{s}.h", .{ info.framework.name, info.framework.name });
     };
 
-    const ast_json = try std.process.Child.run(.{
+    var frameworks = std.ArrayList([]const u8).init(info.allocator);
+    defer frameworks.deinit();
+
+    try frameworks.append(info.framework.name);
+    try frameworks.appendSlice(info.framework.dependencies);
+
+    try Preprocessor.run(.{
         .allocator = info.allocator,
-        .argv = args,
-        .max_output_bytes = 1024 * 1024 * 1024,
-    });
-    defer info.allocator.free(ast_json.stdout);
-    defer info.allocator.free(ast_json.stderr);
 
-    // HACK: Can't figure out how to not get clang to produce this file.
-    std.fs.cwd().deleteFile("a.out") catch {};
+        .path = path,
 
-    const ast = (try parseJsonWithCustomErrorHandling(
-        AstNode,
-        info.allocator,
-        ast_json.stdout,
-        info.path_to_header,
-    )).?;
-    defer ast.deinit();
-
-    info.result.* = try Analyzer.run(ast.value, .{
-        .allocator = info.allocator,
-        .framework = info.framework.name,
+        .include_dirs = &.{libc},
+        .frameworks = frameworks.items,
+        .sdk_path = info.sdk_path,
     });
 }
