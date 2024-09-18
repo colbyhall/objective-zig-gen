@@ -1,4 +1,5 @@
 const std = @import("std");
+const LazyPath = std.Build.LazyPath;
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -21,6 +22,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe.addIncludePath(LazyPath{ .cwd_relative = "/opt/homebrew/opt/llvm/include/" });
+    exe.addLibraryPath(LazyPath{ .cwd_relative = "/opt/homebrew/opt/llvm/lib/" });
+    exe.linkSystemLibrary("clang");
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
