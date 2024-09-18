@@ -4,7 +4,7 @@ const Allocator = mem.Allocator;
 const fmt = std.fmt;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
-const Preprocessor = @import("preprocessor.zig");
+const Tokenizer = @import("Tokenizer.zig");
 
 pub const Framework = struct {
     name: []const u8,
@@ -212,29 +212,43 @@ const PreprocessInfo = struct {
     framework: Framework,
 };
 fn preprocessFramework(info: PreprocessInfo) !void {
-    const libc = try fmt.allocPrint(info.allocator, "{s}/usr/include", .{info.sdk_path});
-    defer info.allocator.free(libc);
-
     const path = blk: {
         if (info.framework.header_override) |header| {
-            break :blk try fmt.allocPrint(info.allocator, "{s}/{s}", .{ info.framework.name, header });
+            break :blk try fmt.allocPrint(
+                info.allocator,
+                "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}",
+                .{ info.sdk_path, info.framework.name, header },
+            );
         }
-        break :blk try fmt.allocPrint(info.allocator, "{s}/{s}.h", .{ info.framework.name, info.framework.name });
+        break :blk try fmt.allocPrint(info.allocator, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
+            info.sdk_path,
+            info.framework.name,
+            info.framework.name,
+        });
     };
 
-    var frameworks = std.ArrayList([]const u8).init(info.allocator);
-    defer frameworks.deinit();
+    const args = [_][]const u8{
+        "zig",
+        "c++",
+        "-E",
+        path,
+    };
 
-    try frameworks.append(info.framework.name);
-    try frameworks.appendSlice(info.framework.dependencies);
-
-    try Preprocessor.run(.{
+    const result = try std.process.Child.run(.{
         .allocator = info.allocator,
-
-        .path = path,
-
-        .include_dirs = &.{libc},
-        .frameworks = frameworks.items,
-        .sdk_path = info.sdk_path,
+        .argv = &args,
+        .max_output_bytes = 16 * 1024 * 1024,
     });
+
+    var tokenizer = Tokenizer.init(@as([:0]u8, @ptrCast(result.stdout)));
+    while (true) {
+        const token = tokenizer.next();
+        if (token.tag == .eof) break;
+        std.debug.print("{}\n", .{token});
+
+        if (token.tag == .invalid) {
+            std.debug.print("{s}\n", .{tokenizer.source[token.loc.start..token.loc.end]});
+            break;
+        }
+    }
 }

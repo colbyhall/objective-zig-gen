@@ -15,6 +15,8 @@ pub const Token = struct {
         bang,
         percent,
         pipe,
+        question,
+        tilde,
 
         l_paren,
         r_paren,
@@ -313,8 +315,28 @@ pub fn next(self: *Tokenizer) Token {
                     self.offset += 1;
                     break;
                 },
+                '^' => {
+                    result.tag = .caret;
+                    self.offset += 1;
+                    break;
+                },
                 '%' => {
                     result.tag = .percent;
+                    self.offset += 1;
+                    break;
+                },
+                '#' => {
+                    result.tag = .pound;
+                    self.offset += 1;
+                    break;
+                },
+                '?' => {
+                    result.tag = .question;
+                    self.offset += 1;
+                    break;
+                },
+                '~' => {
+                    result.tag = .tilde;
                     self.offset += 1;
                     break;
                 },
@@ -389,10 +411,10 @@ pub fn next(self: *Tokenizer) Token {
                     self.offset += 1;
                     break;
                 },
-                else => {
-                    result.tag = .invalid;
-                    break;
+                '\\' => {
+                    state = .char_literal_backslash;
                 },
+                else => {},
             },
             .number_literal => switch (c) {
                 '.' => {
