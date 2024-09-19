@@ -4,8 +4,6 @@ const Allocator = mem.Allocator;
 const fmt = std.fmt;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
-const Tokenizer = @import("Tokenizer.zig");
-const parser = @import("parser.zig");
 
 pub const Framework = struct {
     name: []const u8,
@@ -634,7 +632,7 @@ fn parseFramework(
         index,
         @as([*c]u8, @ptrCast(path)),
         @as([*c]const [*c]const u8, @ptrCast(translate_args[0..])),
-        args.len,
+        translate_args.len,
         null,
         0,
         c.CXTranslationUnit_KeepGoing,
