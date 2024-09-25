@@ -159,7 +159,7 @@ pub fn main() !void {
             defer manifest.deinit();
 
             if (manifest.value.len == 0) {
-                std.debug.print("Found no frameworks in manifest '{s}'.\n", .{result.path});
+                std.log.err("Found no frameworks in manifest '{s}'.", .{result.path});
                 return;
             }
 
@@ -172,7 +172,7 @@ pub fn main() !void {
             for (manifest.value) |framework| {
                 for (framework.dependencies) |dependency| {
                     if (!frameworks.contains(dependency)) {
-                        std.debug.print("Framework '{s}' has '{s}' listed as a dependency but it isn't in the manifest.\n", .{ framework.name, dependency });
+                        std.log.err("Framework '{s}' has '{s}' listed as a dependency but it isn't in the manifest.", .{ framework.name, dependency });
                         return;
                     }
                 }
@@ -188,9 +188,9 @@ pub fn main() !void {
             );
             defer allocator.free(frameworks_path);
 
-            std.debug.print("Parsed manifest and found {} frameworks.\n", .{manifest.value.len});
+            std.log.info("Parsed manifest and found {} frameworks.", .{manifest.value.len});
             for (manifest.value, 0..) |framework, index| {
-                std.debug.print("  {}. {s}\n", .{ index + 1, framework.name });
+                std.log.info("  {}. {s}", .{ index + 1, framework.name });
             }
 
             for (manifest.value) |framework| {
@@ -261,15 +261,31 @@ const Type = union(enum) {
     };
     const Function = struct {
         name: []const u8,
-        result: *Type,
+        result: ?*Type,
         params: std.ArrayList(Param),
+    };
+    const Method = struct {
+        name: []const u8,
+        result: ?*Type,
+        params: std.ArrayList(Param),
+    };
+    const Protocol = struct {
+        name: []const u8,
+        super: ?*Protocol,
+        methods: std.ArrayList(*Method),
+    };
+    const Class = struct {
+        name: []const u8,
+        protocol: ?*Protocol,
     };
 
     va_list,
+    instancetype,
     void,
     objc_class,
     objc_sel,
     objc_id,
+
     int: Int,
     float: Float,
     typedef: Typedef,
@@ -281,6 +297,11 @@ const Type = union(enum) {
     function_proto: FunctionProto,
     function: Function,
     @"enum": Enum,
+    protocol: Protocol,
+    base_protocol,
+    class: Class,
+    type_ref: []const u8,
+    method: Method,
 };
 
 const Registry = struct {
@@ -298,6 +319,8 @@ const Registry = struct {
     structs: std.StringArrayHashMap(Reference),
     functions: std.StringArrayHashMap(Reference),
     enums: std.StringArrayHashMap(Reference),
+    protocols: std.StringArrayHashMap(Reference),
+    classes: std.StringArrayHashMap(Reference),
 
     const Error = error{
         MultipleTypes,
@@ -309,6 +332,8 @@ const Registry = struct {
             .structs = std.StringArrayHashMap(Reference).init(allocator),
             .functions = std.StringArrayHashMap(Reference).init(allocator),
             .enums = std.StringArrayHashMap(Reference).init(allocator),
+            .protocols = std.StringArrayHashMap(Reference).init(allocator),
+            .classes = std.StringArrayHashMap(Reference).init(allocator),
         };
     }
 
@@ -319,6 +344,8 @@ const Registry = struct {
             .@"struct" => self.structs.put(ref.type.@"struct".name, ref),
             .function => self.functions.put(ref.type.function.name, ref),
             .@"enum" => self.enums.put(ref.type.@"enum".name, ref),
+            .protocol => self.protocols.put(ref.type.protocol.name, ref),
+            .class => self.classes.put(ref.type.class.name, ref),
             else => @panic("Type is not able to be lookup by name. "),
         };
         err catch {
@@ -350,6 +377,12 @@ const Registry = struct {
         if (self.enums.get(lookup)) |u| {
             return u.type;
         }
+        if (self.protocols.get(lookup)) |u| {
+            return u.type;
+        }
+        if (self.classes.get(lookup)) |u| {
+            return u.type;
+        }
         return null;
     }
 };
@@ -375,8 +408,8 @@ const Builder = struct {
         };
     }
 
-    fn allocName(self: *@This(), name: [*c]const u8) []const u8 {
-        return fmt.allocPrint(self.arena.allocator(), "{s}", .{name}) catch {
+    fn allocName(self: *@This(), name: []const u8) []const u8 {
+        return self.arena.allocator().dupe(u8, name) catch {
             @panic("OOM");
         };
     }
@@ -395,11 +428,11 @@ const Builder = struct {
         self.stack.clearRetainingCapacity();
     }
 
-    fn current(self: @This()) ?*Type {
+    fn parent(self: @This()) ?*Type {
         return self.stack.getLastOrNull();
     }
 
-    fn parent(self: @This()) ?*Type {
+    fn supersuper(self: @This()) ?*Type {
         if (self.stack.items.len > 1) {
             return self.stack.items[self.stack.items.len - 2];
         }
@@ -514,7 +547,7 @@ const Builder = struct {
                 const underlying_name = c.clang_getTypeSpelling(underlying);
                 defer c.clang_disposeString(underlying_name);
 
-                const name = self.allocName(c.clang_getCString(underlying_name));
+                const name = self.allocName(mem.sliceTo(c.clang_getCString(underlying_name), 0));
                 if (mem.eql(u8, name, "__builtin_va_list")) {
                     result.* = .{
                         .va_list = {},
@@ -522,10 +555,16 @@ const Builder = struct {
                 } else if (self.registry.lookupElaborated(name)) |u| {
                     return u;
                 } else {
-                    std.debug.print("Couldn't find underlying type {s} {s}. Most likely an anonymouse type.\n", .{ name, c.clang_getCString(c.clang_getTypeKindSpelling(underlying.kind)) });
+                    std.log.err(
+                        "Couldn't find underlying type {s} {s}. Most likely an anonymouse type.",
+                        .{
+                            name,
+                            c.clang_getCString(c.clang_getTypeKindSpelling(underlying.kind)),
+                        },
+                    );
                 }
             },
-            c.CXType_Pointer => {
+            c.CXType_Pointer, c.CXType_ObjCObjectPointer => {
                 const underlying = self.analyzeType(c.clang_getPointeeType(@"type"));
                 result.* = .{
                     .pointer = .{
@@ -559,11 +598,18 @@ const Builder = struct {
             },
             c.CXType_Typedef => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
-                const name = self.allocName(c.clang_getCString(name_spelling));
+                const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
                 if (self.registry.lookupElaborated(name)) |u| {
                     return u;
                 } else {
-                    unreachable;
+                    if (mem.eql(u8, name, "instancetype")) {
+                        result.* = .{
+                            .instancetype = {},
+                        };
+                    } else {
+                        std.log.err("Failed to find {s}", .{name});
+                        unreachable;
+                    }
                 }
             },
             c.CXType_IncompleteArray => {
@@ -583,13 +629,29 @@ const Builder = struct {
             c.CXType_ObjCId => {
                 result.* = .{ .objc_id = {} };
             },
+            c.CXType_ObjCInterface => {
+                const name_spelling = c.clang_getTypeSpelling(@"type");
+                const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
+                if (self.registry.lookupElaborated(name)) |u| {
+                    return u;
+                } else {
+                    if (mem.eql(u8, name, "Protocol")) {
+                        result.* = .{
+                            .base_protocol = {},
+                        };
+                    } else {
+                        std.log.err("Failed to find {s}", .{name});
+                        unreachable;
+                    }
+                }
+            },
             else => {
                 const type_kind_spelling = c.clang_getTypeKindSpelling(@"type".kind);
                 defer c.clang_disposeString(type_kind_spelling);
                 const type_spelling = c.clang_getTypeSpelling(@"type");
                 defer c.clang_disposeString(type_spelling);
 
-                std.debug.print("Unhandled type of {s} named {s}\n", .{ c.clang_getCString(type_kind_spelling), c.clang_getCString(type_spelling) });
+                std.log.err("Unhandled type of {s} named {s}", .{ c.clang_getCString(type_kind_spelling), c.clang_getCString(type_spelling) });
                 unreachable;
             },
         }
@@ -641,7 +703,7 @@ fn parseFramework(
     defer c.clang_disposeTranslationUnit(unit);
 
     if (err != c.CXError_Success) {
-        std.debug.print("Failed to parse {s} due to error code {}\n", .{ path, err });
+        std.log.err("Failed to parse {s} due to error code {}", .{ path, err });
         unreachable;
     }
 
@@ -682,15 +744,40 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
     var column: c_uint = undefined;
     c.clang_getFileLocation(location, &file, &line, &column, null);
 
-    // TODO: Determine the origin based on the file
-    const origin = Registry.Origin{ .runtime = {} };
-    const name = c.clang_getCursorSpelling(cursor);
-    defer c.clang_disposeString(name);
+    if (c.clang_getCursorKind(parent_cursor) == c.CXCursor_TranslationUnit) {
+        builder.reset();
+    }
+
+    const origin: Registry.Origin = blk: {
+        if (file != null) {
+            const file_name = c.clang_getFileName(file);
+            defer c.clang_disposeString(file_name);
+
+            const path = mem.sliceTo(c.clang_getCString(file_name), 0);
+            if (mem.indexOf(u8, path, ".framework")) |eon| {
+                var name = path[0..eon];
+                if (mem.lastIndexOf(u8, name, "/")) |start| {
+                    name = name[start + 1 ..];
+                }
+                break :blk .{ .framework = name };
+            }
+        }
+        break :blk .{ .runtime = {} };
+    };
+    const name_spelling = c.clang_getCursorSpelling(cursor);
+    const name = mem.sliceTo(c.clang_getCString(name_spelling), 0);
+    defer c.clang_disposeString(name_spelling);
+
+    {
+        const kind_spelling = c.clang_getCursorKindSpelling(c.clang_getCursorKind(cursor));
+        const parent_kind_spelling = c.clang_getCursorKindSpelling(c.clang_getCursorKind(parent_cursor));
+        std.debug.print("Cursor: {s}, Parent Cursor: {s}\n", .{ c.clang_getCString(kind_spelling), c.clang_getCString(parent_kind_spelling) });
+    }
 
     const kind = c.clang_getCursorKind(cursor);
     switch (kind) {
         c.CXCursor_TypedefDecl => {
-            builder.reset();
+            std.debug.print("typedef {s}\n", .{name});
 
             const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
             const child = builder.analyzeType(child_type);
@@ -698,7 +785,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             const typedef = builder.allocType();
             typedef.* = .{
                 .typedef = .{
-                    .name = builder.allocName(c.clang_getCString(name)),
+                    .name = builder.allocName(name),
                     .child = child,
                 },
             };
@@ -710,12 +797,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Continue;
         },
         c.CXCursor_UnionDecl => {
-            builder.reset();
+            std.debug.print("union {s}\n", .{name});
 
             const union_decl = builder.allocType();
             union_decl.* = .{
                 .@"union" = .{
-                    .name = builder.allocName(c.clang_getCString(name)),
+                    .name = builder.allocName(name),
                     .fields = std.ArrayList(Type.Field).init(builder.gpa),
                 },
             };
@@ -724,17 +811,16 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .origin = origin,
             });
             builder.push(union_decl);
-            std.debug.print("Union Decl {s}\n", .{c.clang_getCString(name)});
 
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_StructDecl => {
-            builder.reset();
+            std.debug.print("struct: {s}\n", .{name});
 
             const struct_decl = builder.allocType();
             struct_decl.* = .{
                 .@"struct" = .{
-                    .name = builder.allocName(c.clang_getCString(name)),
+                    .name = builder.allocName(name),
                     .fields = std.ArrayList(Type.Field).init(builder.gpa),
                 },
             };
@@ -747,7 +833,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_PackedAttr => {
-            const parent = builder.current().?;
+            const parent = builder.parent().?;
 
             switch (parent.*) {
                 .@"struct" => |*s| {
@@ -758,12 +844,14 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_FieldDecl => {
             const field = builder.analyzeType(c.clang_getCursorType(cursor));
-            const parent = builder.current().?;
+            const parent = builder.parent().?;
+
+            std.debug.print("\tField: {s}\n", .{name});
 
             switch (parent.*) {
                 .@"union" => |*u| {
                     u.fields.append(.{
-                        .name = builder.allocName(c.clang_getCString(name)),
+                        .name = builder.allocName(name),
                         .type = field,
                     }) catch {
                         @panic("OOM");
@@ -771,7 +859,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 },
                 .@"struct" => |*s| {
                     s.fields.append(.{
-                        .name = builder.allocName(c.clang_getCString(name)),
+                        .name = builder.allocName(name),
                         .type = field,
                     }) catch {
                         @panic("OOM");
@@ -781,15 +869,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_FunctionDecl => {
-            builder.reset();
-
-            const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
+            std.debug.print("fn {s}\n", .{name});
             const function_decl = builder.allocType();
             function_decl.* = .{
                 .function = .{
-                    .name = builder.allocName(c.clang_getCString(name)),
+                    .name = builder.allocName(name),
                     .params = std.ArrayList(Type.Param).init(builder.gpa),
-                    .result = result,
+                    .result = null,
                 },
             };
             builder.registry.insert(.{
@@ -802,12 +888,22 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_ParmDecl => {
             const param = builder.analyzeType(c.clang_getCursorType(cursor));
-            const parent = builder.current().?;
+            const parent = builder.parent().?;
+            std.debug.print("\tParam: {s}\n", .{name});
 
             switch (parent.*) {
                 .function => |*f| {
                     f.params.append(.{
-                        .name = builder.allocName(c.clang_getCString(name)),
+                        .name = builder.allocName(name),
+                        .type = param,
+                    }) catch {
+                        @panic("OOM");
+                    };
+                },
+                .protocol => |*p| {
+                    const last = p.methods.items[p.methods.items.len - 1];
+                    last.params.append(.{
+                        .name = builder.allocName(name),
                         .type = param,
                     }) catch {
                         @panic("OOM");
@@ -817,10 +913,11 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_TypeRef => {
-            if (builder.current()) |parent| {
+            if (builder.parent()) |parent| {
                 switch (parent.*) {
-                    .function => {
+                    .function, .protocol => {
                         // Ignore this because its the return type and we retrieved it earlier
+                        std.debug.print("TypeRef: {s}\n", .{c.clang_getCString(name_spelling)});
                     },
                     else => {
                         unreachable;
@@ -829,14 +926,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_EnumDecl => {
-            builder.reset();
-
             const backing = builder.analyzeType(c.clang_getEnumDeclIntegerType(cursor));
 
             const enum_decl = builder.allocType();
             enum_decl.* = .{
                 .@"enum" = .{
-                    .name = builder.allocName(c.clang_getCString(name)),
+                    .name = builder.allocName(name),
                     .backing = backing,
                     .values = std.ArrayList(Type.Enum.Value).init(builder.gpa),
                 },
@@ -852,11 +947,11 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_EnumConstantDecl => {
             const value = c.clang_getEnumConstantDeclValue(cursor);
 
-            const parent = builder.current().?;
+            const parent = builder.parent().?;
             switch (parent.*) {
                 .@"enum" => |*e| {
                     e.values.append(.{
-                        .name = builder.allocName(c.clang_getCString(name)),
+                        .name = builder.allocName(name),
                         .value = @intCast(value),
                     }) catch {
                         @panic("OOM");
@@ -864,6 +959,73 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 },
                 else => unreachable,
             }
+            return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCProtocolDecl => {
+            const protocol = builder.allocType();
+            protocol.* = .{
+                .protocol = .{
+                    .name = builder.allocName(name),
+                    .super = null,
+                    .methods = std.ArrayList(*Type.Method).init(builder.gpa),
+                },
+            };
+            builder.registry.insert(.{
+                .type = protocol,
+                .origin = origin,
+            });
+            builder.push(protocol);
+            std.debug.print("Protocol {s}\n", .{protocol.protocol.name});
+
+            return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCInstanceMethodDecl => {
+            std.debug.print("\tfn {s}\n", .{name});
+
+            const parent = builder.parent().?;
+            switch (parent.*) {
+                .protocol => |*p| {
+                    const method = builder.allocType();
+                    method.* = .{
+                        .method = .{
+                            .name = builder.allocName(name),
+                            .result = null,
+                            .params = std.ArrayList(Type.Param).init(builder.gpa),
+                        },
+                    };
+                    p.methods.append(&method.method) catch {
+                        @panic("OOM");
+                    };
+                    builder.push(method);
+                },
+                .@"struct" => |s| {
+                    std.debug.print("{s}\n", .{s.name});
+                    unreachable;
+                },
+                else => {
+                    std.debug.print("{}\n", .{std.meta.activeTag(parent.*)});
+                    unreachable;
+                },
+            }
+            return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCPropertyDecl => {
+            return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCClassRef => {
+            const class = builder.allocType();
+            class.* = .{
+                .class = .{
+                    .name = builder.allocName(name),
+                    .protocol = null,
+                },
+            };
+            builder.registry.insert(.{
+                .type = class,
+                .origin = origin,
+            });
+            std.debug.print("Class {s}\n", .{name});
+
             return c.CXChildVisit_Recurse;
         },
         // TODO: Evaluate if we need this for enum constants.
@@ -884,17 +1046,16 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_AsmLabelAttr,
         c.CXCursor_UnexposedAttr,
         c.CXCursor_UnexposedExpr,
-        c.CXCursor_ObjCClassRef,
         c.CXCursor_WarnUnusedResultAttr,
         c.CXCursor_ObjCBoxable,
         c.CXCursor_VisibilityAttr,
         => {},
         else => {
-            std.debug.print(
-                "Unhandled kind: {s} of name {s}. Parent kind: {s} of name {s}\n",
+            std.log.err(
+                "Unhandled kind: {s} of name {s}. Parent kind: {s} of name {s}",
                 .{
                     c.clang_getCString(c.clang_getCursorKindSpelling(kind)),
-                    c.clang_getCString(name),
+                    c.clang_getCString(name_spelling),
                     c.clang_getCString(c.clang_getCursorKindSpelling(c.clang_getCursorKind(parent_cursor))),
                     c.clang_getCString(c.clang_getCursorSpelling(parent_cursor)),
                 },
