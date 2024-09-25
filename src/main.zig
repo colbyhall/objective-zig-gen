@@ -248,6 +248,11 @@ const Type = union(enum) {
             super: ?*Protocol,
             methods: std.ArrayList(*Method),
         };
+        const Interface = struct {
+            super: ?*@This(),
+            protocols: std.ArrayList(*Protocol),
+            methods: std.ArrayList(*Method),
+        };
         const Class = struct {
             protocol: ?*Protocol,
         };
@@ -264,6 +269,7 @@ const Type = union(enum) {
             function: Function,
             method: Method,
             protocol: Protocol,
+            interface: Interface,
             class: Class,
             type_reference,
         },
@@ -329,6 +335,7 @@ const Registry = struct {
     enums: std.StringArrayHashMap(Reference),
     protocols: std.StringArrayHashMap(Reference),
     classes: std.StringArrayHashMap(Reference),
+    interfaces: std.StringArrayHashMap(Reference),
 
     const Error = error{
         MultipleTypes,
@@ -342,6 +349,7 @@ const Registry = struct {
             .enums = std.StringArrayHashMap(Reference).init(allocator),
             .protocols = std.StringArrayHashMap(Reference).init(allocator),
             .classes = std.StringArrayHashMap(Reference).init(allocator),
+            .interfaces = std.StringArrayHashMap(Reference).init(allocator),
         };
     }
 
@@ -354,6 +362,7 @@ const Registry = struct {
             .@"enum" => &self.enums,
             .protocol => &self.protocols,
             .class => &self.classes,
+            .interface => &self.interfaces,
             else => @panic("Type is not supported by Registry."),
         };
 
@@ -398,6 +407,9 @@ const Registry = struct {
                     return u.type;
                 }
                 if (self.classes.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.interfaces.get(lookup_name)) |u| {
                     return u.type;
                 }
             },
@@ -664,6 +676,9 @@ const Builder = struct {
             c.CXType_ObjCId => {
                 result.* = .{ .objc_id = {} };
             },
+            c.CXType_ObjCObject, c.CXType_ObjCTypeParam => {
+                std.debug.print("TODO: ObjCObject\n", .{});
+            },
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
@@ -802,6 +817,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         if (file != null) {
             const file_name = c.clang_getFileName(file);
             defer c.clang_disposeString(file_name);
+            std.debug.print("{s} line: {} col: {}\n", .{ c.clang_getCString(file_name), line, column });
 
             const path = mem.sliceTo(c.clang_getCString(file_name), 0);
             if (mem.indexOf(u8, path, ".framework")) |eon| {
@@ -1014,6 +1030,9 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             if (builder.parent()) |parent| {
                 switch (parent.tag) {
                     .function, .method => {},
+                    .interface => {
+                        // TODO: Super protocols/interfaces with type param
+                    },
                     else => {
                         unreachable;
                     },
@@ -1086,32 +1105,37 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
 
             return c.CXChildVisit_Recurse;
         },
-        c.CXCursor_ObjCInstanceMethodDecl => {
+        c.CXCursor_ObjCInstanceMethodDecl, c.CXCursor_ObjCClassMethodDecl => {
             std.debug.print("\tfn {s}\n", .{name});
 
             const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
+            const method = builder.allocType();
+            method.* = .{
+                .named = .{
+                    .name = builder.allocName(name),
+                    .cursor = cursor,
+
+                    .tag = .{
+                        .method = .{
+                            .result = result,
+                            .params = std.ArrayList(*Type.Named.Param).init(builder.gpa),
+                        },
+                    },
+                },
+            };
+            defer builder.push(&method.named);
 
             const parent = builder.parent().?;
             switch (parent.tag) {
                 .protocol => |*p| {
-                    const method = builder.allocType();
-                    method.* = .{
-                        .named = .{
-                            .name = builder.allocName(name),
-                            .cursor = cursor,
-
-                            .tag = .{
-                                .method = .{
-                                    .result = result,
-                                    .params = std.ArrayList(*Type.Named.Param).init(builder.gpa),
-                                },
-                            },
-                        },
-                    };
                     p.methods.append(&method.named.tag.method) catch {
                         @panic("OOM");
                     };
-                    builder.push(&method.named);
+                },
+                .interface => |*i| {
+                    i.methods.append(&method.named.tag.method) catch {
+                        @panic("OOM");
+                    };
                 },
                 .@"struct" => {
                     std.debug.print("{s}\n", .{parent.name});
@@ -1122,6 +1146,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     unreachable;
                 },
             }
+
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCPropertyDecl => {
@@ -1146,8 +1171,49 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .type = &class.named,
                 .origin = origin,
             });
+            builder.push(&class.named);
 
             return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCInterfaceDecl => {
+            std.debug.print("Interface {s}\n", .{name});
+
+            const interface = builder.allocType();
+            interface.* = .{
+                .named = .{
+                    .name = builder.allocName(name),
+                    .cursor = cursor,
+                    .tag = .{
+                        .interface = .{
+                            .super = null,
+                            .protocols = std.ArrayList(*Type.Named.Protocol).init(builder.gpa),
+                            .methods = std.ArrayList(*Type.Named.Method).init(builder.gpa),
+                        },
+                    },
+                },
+            };
+            builder.registry.insert(.{
+                .type = &interface.named,
+                .origin = origin,
+            });
+            builder.push(&interface.named);
+
+            return c.CXChildVisit_Recurse;
+        },
+        c.CXCursor_ObjCProtocolRef => {
+            std.debug.print("Protocol Ref: {s}\n", .{name});
+        },
+        c.CXCursor_ObjCIvarDecl => {
+            std.debug.print("Ivar: {s}\n", .{name});
+        },
+        c.CXCursor_ObjCSuperClassRef => {
+            std.debug.print("SuperClassRef: {s}\n", .{name});
+        },
+        c.CXCursor_ObjCCategoryDecl,
+        c.CXCursor_TemplateTypeParameter,
+        c.CXCursor_AlignedAttr,
+        => {
+            // TODO: IMPLEMENT ME
         },
         // TODO: Evaluate if we need this for enum constants.
         c.CXCursor_IntegerLiteral,
@@ -1170,6 +1236,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_WarnUnusedResultAttr,
         c.CXCursor_ObjCBoxable,
         c.CXCursor_VisibilityAttr,
+        c.CXCursor_ObjCRootClass,
+        c.CXCursor_ObjCDesignatedInitializer,
+        c.CXCursor_UnexposedDecl,
+        c.CXCursor_NSReturnsRetained,
+        c.CXCursor_PureAttr,
+        c.CXCursor_ObjCException,
+        c.CXCursor_ObjCReturnsInnerPointer,
         => {},
         else => {
             std.log.err(
