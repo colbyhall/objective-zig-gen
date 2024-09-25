@@ -249,12 +249,17 @@ const Type = union(enum) {
             methods: std.ArrayList(*Method),
         };
         const Interface = struct {
-            super: ?*@This(),
+            type_parameters: std.ArrayList([]const u8),
+
+            super: ?*Named,
             protocols: std.ArrayList(*Protocol),
             methods: std.ArrayList(*Method),
         };
         const Class = struct {
             protocol: ?*Protocol,
+        };
+        const TypeReference = struct {
+            type_parameters: std.ArrayList([]const u8),
         };
 
         name: []const u8,
@@ -271,10 +276,11 @@ const Type = union(enum) {
             protocol: Protocol,
             interface: Interface,
             class: Class,
-            type_reference,
+            type_reference: TypeReference,
         },
 
         fn asType(self: *@This()) *Type {
+            // HACK: This needs to be based on type info. I haven't even tested if this is right.
             const parent = @intFromPtr(self) - 8;
             return @ptrFromInt(parent);
         }
@@ -606,7 +612,11 @@ const Builder = struct {
                         .named = .{
                             .name = self.allocName(mem.sliceTo(c.clang_getCString(underlying_name), 0)),
                             .cursor = c.clang_getNullCursor(),
-                            .tag = .{ .type_reference = {} },
+                            .tag = .{
+                                .type_reference = .{
+                                    .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                },
+                            },
                         },
                     };
                 }
@@ -792,6 +802,8 @@ fn parseFramework(
 
 fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClientData) callconv(.C) c.CXChildVisitResult {
     const builder: *Builder = @alignCast(@ptrCast(client_data));
+
+    std.debug.print("\n", .{});
 
     const location = c.clang_getCursorLocation(cursor);
     var file: c.CXFile = undefined;
@@ -1018,20 +1030,18 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_TypeRef => {
             std.debug.print("TypeRef: {s}\n", .{name});
 
-            const type_ref = builder.allocType();
-            type_ref.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .cursor = cursor,
-                    .tag = .{ .type_reference = {} },
-                },
-            };
-
             if (builder.parent()) |parent| {
                 switch (parent.tag) {
                     .function, .method => {},
-                    .interface => {
-                        // TODO: Super protocols/interfaces with type param
+                    .interface => |i| {
+                        for (i.type_parameters.items) |param| {
+                            if (mem.eql(u8, param, name)) {
+                                i.super.?.tag.type_reference.type_parameters.append(builder.allocName(name)) catch {
+                                    @panic("OOM");
+                                };
+                                break;
+                            }
+                        }
                     },
                     else => {
                         unreachable;
@@ -1041,8 +1051,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_EnumDecl => {
             std.debug.print("Enum: {s}\n", .{name});
-            const backing = builder.analyzeType(c.clang_getEnumDeclIntegerType(cursor));
 
+            const backing = builder.analyzeType(c.clang_getEnumDeclIntegerType(cursor));
             const enum_decl = builder.allocType();
             enum_decl.* = .{
                 .named = .{
@@ -1185,6 +1195,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .cursor = cursor,
                     .tag = .{
                         .interface = .{
+                            .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
                             .super = null,
                             .protocols = std.ArrayList(*Type.Named.Protocol).init(builder.gpa),
                             .methods = std.ArrayList(*Type.Named.Method).init(builder.gpa),
@@ -1207,10 +1218,43 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             std.debug.print("Ivar: {s}\n", .{name});
         },
         c.CXCursor_ObjCSuperClassRef => {
-            std.debug.print("SuperClassRef: {s}\n", .{name});
+            const num_template_args = c.clang_Type_getNumTemplateArguments(c.clang_getCursorType(cursor));
+            std.debug.print("SuperClassRef: {s} has {} args.\n", .{ name, num_template_args });
+
+            const super = builder.allocType();
+            super.* = .{
+                .named = .{
+                    .name = builder.allocName(name),
+                    .cursor = cursor,
+                    .tag = .{
+                        .type_reference = .{
+                            .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                        },
+                    },
+                },
+            };
+            const parent = builder.parent().?;
+            switch (parent.tag) {
+                .interface => |*i| {
+                    i.super = &super.named;
+                },
+                else => unreachable,
+            }
+        },
+        c.CXCursor_TemplateTypeParameter => {
+            std.debug.print("Template Type Parameter: {s}\n", .{name});
+
+            const parent = builder.parent().?;
+            switch (parent.tag) {
+                .interface => |*i| {
+                    i.type_parameters.append(builder.allocName(name)) catch {
+                        @panic("OOM");
+                    };
+                },
+                else => unreachable,
+            }
         },
         c.CXCursor_ObjCCategoryDecl,
-        c.CXCursor_TemplateTypeParameter,
         c.CXCursor_AlignedAttr,
         => {
             // TODO: IMPLEMENT ME
