@@ -703,7 +703,7 @@ const Builder = struct {
                 result.* = .{ .objc_id = {} };
             },
             c.CXType_ObjCObject, c.CXType_ObjCTypeParam => {
-                std.debug.print("TODO: ObjCObject\n", .{});
+                std.log.warn("TODO: ObjCObject", .{});
             },
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
@@ -824,8 +824,6 @@ fn parseFramework(
 fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClientData) callconv(.C) c.CXChildVisitResult {
     const builder: *Builder = @alignCast(@ptrCast(client_data));
 
-    std.debug.print("\n", .{});
-
     const location = c.clang_getCursorLocation(cursor);
     var file: c.CXFile = undefined;
     var line: c_uint = undefined;
@@ -835,7 +833,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
     while (builder.stack.items.len > 0) {
         const parent = builder.parent().?;
         if (c.clang_equalCursors(parent.cursor, parent_cursor) == 0) {
-            std.debug.print("Popping: {s}\n", .{parent.name});
             builder.pop();
         } else {
             break;
@@ -850,7 +847,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         if (file != null) {
             const file_name = c.clang_getFileName(file);
             defer c.clang_disposeString(file_name);
-            std.debug.print("{s} line: {} col: {}\n", .{ c.clang_getCString(file_name), line, column });
 
             const path = mem.sliceTo(c.clang_getCString(file_name), 0);
             if (mem.indexOf(u8, path, ".framework")) |eon| {
@@ -867,17 +863,9 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
     const name = mem.sliceTo(c.clang_getCString(name_spelling), 0);
     defer c.clang_disposeString(name_spelling);
 
-    {
-        const kind_spelling = c.clang_getCursorKindSpelling(c.clang_getCursorKind(cursor));
-        const parent_kind_spelling = c.clang_getCursorKindSpelling(c.clang_getCursorKind(parent_cursor));
-        std.debug.print("Cursor: {s}, Parent Cursor: {s}\n", .{ c.clang_getCString(kind_spelling), c.clang_getCString(parent_kind_spelling) });
-    }
-
     const kind = c.clang_getCursorKind(cursor);
     switch (kind) {
         c.CXCursor_TypedefDecl => {
-            std.debug.print("typedef {s}\n", .{name});
-
             const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
             const child = builder.analyzeType(child_type);
 
@@ -901,8 +889,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Continue;
         },
         c.CXCursor_UnionDecl => {
-            std.debug.print("union {s}\n", .{name});
-
             const union_decl = builder.allocType();
             union_decl.* = .{
                 .named = .{
@@ -924,8 +910,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_StructDecl => {
-            std.debug.print("struct: {s}\n", .{name});
-
             const struct_decl = builder.allocType();
             struct_decl.* = .{
                 .named = .{
@@ -960,8 +944,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_FieldDecl => {
-            std.debug.print("\tField: {s}\n", .{name});
-
             const field_inner = builder.analyzeType(c.clang_getCursorType(cursor));
             const field = builder.allocType();
             field.* = .{
@@ -992,8 +974,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_FunctionDecl => {
-            std.debug.print("fn {s}\n", .{name});
-
             const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
             const function_decl = builder.allocType();
             function_decl.* = .{
@@ -1017,8 +997,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ParmDecl => {
-            std.debug.print("\tParam: {s}\n", .{name});
-
             const param_inner = builder.analyzeType(c.clang_getCursorType(cursor));
             const param = builder.allocType();
             param.* = .{
@@ -1049,8 +1027,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_TypeRef => {
-            std.debug.print("TypeRef: {s}\n", .{name});
-
             if (builder.parent()) |parent| {
                 switch (parent.tag) {
                     .function, .method => {},
@@ -1071,8 +1047,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_EnumDecl => {
-            std.debug.print("Enum: {s}\n", .{name});
-
             const backing = builder.analyzeType(c.clang_getEnumDeclIntegerType(cursor));
             const enum_decl = builder.allocType();
             enum_decl.* = .{
@@ -1113,8 +1087,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Continue;
         },
         c.CXCursor_ObjCProtocolDecl => {
-            std.debug.print("Protocol {s}\n", .{name});
-
             const protocol = builder.allocType();
             protocol.* = .{
                 .named = .{
@@ -1137,8 +1109,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCInstanceMethodDecl, c.CXCursor_ObjCClassMethodDecl => {
-            std.debug.print("\tfn {s}\n", .{name});
-
             const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
             const method = builder.allocType();
             method.* = .{
@@ -1168,12 +1138,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         @panic("OOM");
                     };
                 },
-                .@"struct" => {
-                    std.debug.print("{s}\n", .{parent.name});
-                    unreachable;
-                },
                 else => {
-                    std.debug.print("{}\n", .{std.meta.activeTag(parent.tag)});
+                    std.log.err("Unhandled parent for ObjCMethod {}", .{std.meta.activeTag(parent.tag)});
                     unreachable;
                 },
             }
@@ -1181,11 +1147,10 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCPropertyDecl => {
+            std.log.warn("TODO: ObjCPropertyDecl {s}", .{name});
             return c.CXChildVisit_Continue;
         },
         c.CXCursor_ObjCClassRef => {
-            std.debug.print("Class {s}\n", .{name});
-
             const class = builder.allocType();
             class.* = .{
                 .named = .{
@@ -1207,8 +1172,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCInterfaceDecl => {
-            std.debug.print("Interface {s}\n", .{name});
-
             const interface = builder.allocType();
             interface.* = .{
                 .named = .{
@@ -1233,15 +1196,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCProtocolRef => {
-            std.debug.print("Protocol Ref: {s}\n", .{name});
+            std.log.warn("TODO: Protocol Ref {s}", .{name});
         },
         c.CXCursor_ObjCIvarDecl => {
-            std.debug.print("Ivar: {s}\n", .{name});
+            std.log.warn("TODO: Ivar {s}", .{name});
         },
         c.CXCursor_ObjCSuperClassRef => {
-            const num_template_args = c.clang_Type_getNumTemplateArguments(c.clang_getCursorType(cursor));
-            std.debug.print("SuperClassRef: {s} has {} args.\n", .{ name, num_template_args });
-
             const super = builder.allocType();
             super.* = .{
                 .named = .{
@@ -1263,8 +1223,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_TemplateTypeParameter => {
-            std.debug.print("Template Type Parameter: {s}\n", .{name});
-
             const parent = builder.parent().?;
             switch (parent.tag) {
                 .interface => |*i| {
