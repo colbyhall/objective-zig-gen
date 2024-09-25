@@ -353,36 +353,62 @@ const Registry = struct {
         };
     }
 
-    fn lookupElaborated(self: @This(), name: []const u8) ?*Type {
-        var lookup = name;
+    fn lookup(self: @This(), name: []const u8) ?*Type {
+        var lookup_name = name;
+
+        const Preference = enum { none, @"enum", @"struct", @"union" };
+        var preference = Preference.none;
 
         // Remove struct or union prefix
-        if (mem.indexOf(u8, lookup, "enum ")) |index| {
-            lookup = lookup[index + 5 ..];
-        } else if (mem.indexOf(u8, lookup, "struct ")) |index| {
-            lookup = lookup[index + 7 ..];
-        } else if (mem.indexOf(u8, lookup, "union ")) |index| {
-            lookup = lookup[index + 6 ..];
+        if (mem.indexOf(u8, lookup_name, "enum ")) |index| {
+            lookup_name = lookup_name[index + 5 ..];
+            preference = .@"enum";
+        } else if (mem.indexOf(u8, lookup_name, "struct ")) |index| {
+            lookup_name = lookup_name[index + 7 ..];
+            preference = .@"struct";
+        } else if (mem.indexOf(u8, lookup_name, "union ")) |index| {
+            lookup_name = lookup_name[index + 6 ..];
+            preference = .@"union";
         }
 
-        if (self.typedefs.get(lookup)) |u| {
-            return u.type;
+        switch (preference) {
+            .none => {
+                if (self.typedefs.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.unions.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.structs.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.enums.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.protocols.get(lookup_name)) |u| {
+                    return u.type;
+                }
+                if (self.classes.get(lookup_name)) |u| {
+                    return u.type;
+                }
+            },
+            .@"enum" => {
+                if (self.enums.get(lookup_name)) |u| {
+                    return u.type;
+                }
+            },
+            .@"struct" => {
+                if (self.structs.get(lookup_name)) |u| {
+                    return u.type;
+                }
+            },
+            .@"union" => {
+                if (self.unions.get(lookup_name)) |u| {
+                    return u.type;
+                }
+            },
         }
-        if (self.unions.get(lookup)) |u| {
-            return u.type;
-        }
-        if (self.structs.get(lookup)) |u| {
-            return u.type;
-        }
-        if (self.enums.get(lookup)) |u| {
-            return u.type;
-        }
-        if (self.protocols.get(lookup)) |u| {
-            return u.type;
-        }
-        if (self.classes.get(lookup)) |u| {
-            return u.type;
-        }
+
         return null;
     }
 };
@@ -552,7 +578,7 @@ const Builder = struct {
                     result.* = .{
                         .va_list = {},
                     };
-                } else if (self.registry.lookupElaborated(name)) |u| {
+                } else if (self.registry.lookup(name)) |u| {
                     return u;
                 } else {
                     std.log.err(
@@ -599,7 +625,7 @@ const Builder = struct {
             c.CXType_Typedef => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookupElaborated(name)) |u| {
+                if (self.registry.lookup(name)) |u| {
                     return u;
                 } else {
                     if (mem.eql(u8, name, "instancetype")) {
@@ -632,7 +658,7 @@ const Builder = struct {
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookupElaborated(name)) |u| {
+                if (self.registry.lookup(name)) |u| {
                     return u;
                 } else {
                     if (mem.eql(u8, name, "Protocol")) {
