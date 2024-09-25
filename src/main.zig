@@ -193,13 +193,24 @@ pub fn main() !void {
                 std.log.info("  {}. {s}", .{ index + 1, framework.name });
             }
 
+            var thread_pool: std.Thread.Pool = undefined;
+            try thread_pool.init(.{ .allocator = allocator });
+
+            var parse_framework_work = std.Thread.WaitGroup{};
             for (manifest.value) |framework| {
-                try parseFramework(.{
-                    .allocator = allocator,
-                    .sdk_path = sdk_path,
-                    .framework = framework,
-                });
+                thread_pool.spawnWg(
+                    &parse_framework_work,
+                    parseFramework,
+                    .{
+                        .{
+                            .allocator = allocator,
+                            .sdk_path = sdk_path,
+                            .framework = framework,
+                        },
+                    },
+                );
             }
+            thread_pool.waitAndWork(&parse_framework_work);
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
@@ -725,20 +736,22 @@ fn parseFramework(
         sdk_path: []const u8,
         framework: Framework,
     },
-) !void {
+) void {
     const path = blk: {
         if (args.framework.header_override) |header| {
-            break :blk try fmt.allocPrintZ(
+            break :blk fmt.allocPrintZ(
                 args.allocator,
                 "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}",
                 .{ args.sdk_path, args.framework.name, header },
             );
         }
-        break :blk try fmt.allocPrintZ(args.allocator, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
+        break :blk fmt.allocPrintZ(args.allocator, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
             args.sdk_path,
             args.framework.name,
             args.framework.name,
         });
+    } catch {
+        @panic("OOM");
     };
 
     const index = c.clang_createIndex(0, 0);
