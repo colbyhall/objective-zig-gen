@@ -196,16 +196,19 @@ pub fn main() !void {
             var thread_pool: std.Thread.Pool = undefined;
             try thread_pool.init(.{ .allocator = allocator });
 
+            const results = try allocator.alloc(Registry, manifest.value.len);
             var parse_framework_work = std.Thread.WaitGroup{};
-            for (manifest.value) |framework| {
+            for (manifest.value, 0..) |framework, index| {
                 thread_pool.spawnWg(
                     &parse_framework_work,
                     parseFramework,
                     .{
                         .{
-                            .allocator = allocator,
+                            .gpa = allocator,
+                            .arena = allocator,
                             .sdk_path = sdk_path,
                             .framework = framework,
+                            .result = &results[index],
                         },
                     },
                 );
@@ -453,27 +456,29 @@ const Registry = struct {
 
 const Builder = struct {
     gpa: Allocator,
+    arena: Allocator,
+
     stack: std.ArrayList(*Type.Named),
     registry: Registry,
-    arena: std.heap.ArenaAllocator,
 
-    fn init(gpa: Allocator) @This() {
+    fn init(gpa: Allocator, arena: Allocator) @This() {
         return .{
             .gpa = gpa,
+            .arena = arena,
+
             .stack = std.ArrayList(*Type.Named).init(gpa),
             .registry = Registry.init(gpa),
-            .arena = std.heap.ArenaAllocator.init(gpa),
         };
     }
 
     fn allocType(self: *@This()) *Type {
-        return self.arena.allocator().create(Type) catch {
+        return self.arena.create(Type) catch {
             @panic("OOM");
         };
     }
 
     fn allocName(self: *@This(), name: []const u8) []const u8 {
-        return self.arena.allocator().dupe(u8, name) catch {
+        return self.arena.dupe(u8, name) catch {
             @panic("OOM");
         };
     }
@@ -651,7 +656,7 @@ const Builder = struct {
             c.CXType_FunctionProto => {
                 const result_type = self.analyzeType(c.clang_getResultType(@"type"));
                 const num_args: usize = @intCast(c.clang_getNumArgTypes(@"type"));
-                const params = self.arena.allocator().alloc(*Type, num_args) catch {
+                const params = self.arena.alloc(*Type, num_args) catch {
                     @panic("OOM");
                 };
                 for (0..num_args) |index| {
@@ -732,20 +737,22 @@ const Builder = struct {
 
 fn parseFramework(
     args: struct {
-        allocator: Allocator,
+        gpa: Allocator,
+        arena: Allocator,
         sdk_path: []const u8,
         framework: Framework,
+        result: *Registry,
     },
 ) void {
     const path = blk: {
         if (args.framework.header_override) |header| {
             break :blk fmt.allocPrintZ(
-                args.allocator,
+                args.gpa,
                 "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}",
                 .{ args.sdk_path, args.framework.name, header },
             );
         }
-        break :blk fmt.allocPrintZ(args.allocator, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
+        break :blk fmt.allocPrintZ(args.gpa, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
             args.sdk_path,
             args.framework.name,
             args.framework.name,
@@ -781,7 +788,7 @@ fn parseFramework(
     }
 
     const cursor = c.clang_getTranslationUnitCursor(unit);
-    var builder = Builder.init(args.allocator);
+    var builder = Builder.init(args.gpa, args.arena);
     // Add this type because it was missing for some reason.
     {
         const _u128_t = builder.allocType();
@@ -811,6 +818,7 @@ fn parseFramework(
         });
     }
     _ = c.clang_visitChildren(cursor, visitor, &builder);
+    args.result.* = builder.registry;
 }
 
 fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClientData) callconv(.C) c.CXChildVisitResult {
