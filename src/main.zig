@@ -164,9 +164,9 @@ pub fn main() !void {
             }
 
             // First thing to do is to validate that any framework dependency is listed in the manifest
-            var frameworks = std.StringHashMap(Framework).init(allocator);
+            var frameworks = std.StringHashMap(*const Framework).init(allocator);
             defer frameworks.deinit();
-            for (manifest.value) |framework| {
+            for (manifest.value) |*framework| {
                 try frameworks.put(framework.name, framework);
             }
             for (manifest.value) |framework| {
@@ -198,7 +198,7 @@ pub fn main() !void {
 
             const results = try allocator.alloc(Registry, manifest.value.len);
             var parse_framework_work = std.Thread.WaitGroup{};
-            for (manifest.value, 0..) |framework, index| {
+            for (manifest.value, 0..) |*framework, index| {
                 thread_pool.spawnWg(
                     &parse_framework_work,
                     parseFramework,
@@ -214,6 +214,38 @@ pub fn main() !void {
                 );
             }
             thread_pool.waitAndWork(&parse_framework_work);
+
+            const cwd = std.fs.cwd();
+
+            const output_path = "output";
+            cwd.makeDir(output_path) catch |err| {
+                if (err != std.fs.Dir.MakeError.PathAlreadyExists) {
+                    return err;
+                }
+            };
+
+            var output = try cwd.openDir(output_path, .{});
+            defer output.close();
+
+            // Copy about the objc runtime to the output directory.
+            {
+                var objc_file = try output.createFile("objc.zig", .{});
+                defer objc_file.close();
+                _ = try objc_file.write(@embedFile("objc.zig"));
+            }
+
+            var render_framework_work = std.Thread.WaitGroup{};
+            for (results) |*r| {
+                thread_pool.spawnWg(&render_framework_work, renderFramework, .{
+                    .{
+                        .gpa = allocator,
+                        .output = output,
+                        .frameworks = &frameworks,
+                        .registry = r,
+                    },
+                });
+            }
+            thread_pool.waitAndWork(&render_framework_work);
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
@@ -348,6 +380,8 @@ const Registry = struct {
         origin: Origin,
     };
 
+    owner: *const Framework,
+
     typedefs: std.StringArrayHashMap(Reference),
     unions: std.StringArrayHashMap(Reference),
     structs: std.StringArrayHashMap(Reference),
@@ -360,8 +394,9 @@ const Registry = struct {
     const Error = error{
         MultipleTypes,
     } || Allocator.Error;
-    fn init(allocator: Allocator) @This() {
+    fn init(owner: *const Framework, allocator: Allocator) @This() {
         return .{
+            .owner = owner,
             .typedefs = std.StringArrayHashMap(Reference).init(allocator),
             .unions = std.StringArrayHashMap(Reference).init(allocator),
             .structs = std.StringArrayHashMap(Reference).init(allocator),
@@ -461,13 +496,13 @@ const Builder = struct {
     stack: std.ArrayList(*Type.Named),
     registry: Registry,
 
-    fn init(gpa: Allocator, arena: Allocator) @This() {
+    fn init(owner: *const Framework, gpa: Allocator, arena: Allocator) @This() {
         return .{
             .gpa = gpa,
             .arena = arena,
 
             .stack = std.ArrayList(*Type.Named).init(gpa),
-            .registry = Registry.init(gpa),
+            .registry = Registry.init(owner, gpa),
         };
     }
 
@@ -740,7 +775,7 @@ fn parseFramework(
         gpa: Allocator,
         arena: Allocator,
         sdk_path: []const u8,
-        framework: Framework,
+        framework: *const Framework,
         result: *Registry,
     },
 ) void {
@@ -788,7 +823,7 @@ fn parseFramework(
     }
 
     const cursor = c.clang_getTranslationUnitCursor(unit);
-    var builder = Builder.init(args.gpa, args.arena);
+    var builder = Builder.init(args.framework, args.gpa, args.arena);
     // Add this type because it was missing for some reason.
     {
         const _u128_t = builder.allocType();
@@ -1282,4 +1317,44 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
     }
 
     return c.CXChildVisit_Continue;
+}
+
+const Renderer = struct {
+    writer: std.fs.File.Writer,
+
+    fn init(writer: std.fs.File.Writer) @This() {
+        return .{
+            .writer = writer,
+        };
+    }
+
+    fn render(self: *@This(), comptime format: []const u8, args: anytype) void {
+        self.writer.print(format, args) catch {
+            @panic("Failed to write to output file.");
+        };
+    }
+};
+
+fn renderFramework(args: struct {
+    gpa: Allocator,
+    output: std.fs.Dir,
+    frameworks: *const std.StringHashMap(*const Framework),
+    registry: *const Registry,
+}) void {
+    const path = fmt.allocPrint(args.gpa, "{s}.zig", .{args.registry.owner.output_file}) catch {
+        @panic("OOM");
+    };
+    var output_file = args.output.createFile(path, .{}) catch {
+        @panic("Failed to create output file");
+    };
+    defer output_file.close();
+
+    var renderer = Renderer.init(output_file.writer());
+    renderer.render("// THIS FILE IS AUTOGENERATED. MODIFICATIONS WILL NOT BE MAINTAINED.\n\n", .{});
+    renderer.render("const std = @import(\"std\");\n", .{});
+    renderer.render("const objc = @import(\"objc.zig\"); // Objective-C Runtime in zig.\n", .{});
+    for (args.registry.owner.dependencies) |d| {
+        const dep = args.frameworks.get(d).?;
+        renderer.render("const {s} = @import(\"{s}.zig\"); // Framework dependency {s}.\n", .{ dep.name, dep.output_file, dep.name });
+    }
 }
