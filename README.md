@@ -1,8 +1,8 @@
-# Zig Objective-C Generator (zigobjcgen)
+# Zig Objective-C Generator (objective-zig-gen)
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-`zigobjcgen` is a work-in-progress tool for generating Objective-C bindings from Zig. This project aims to streamline the process of integrating Objective-C code with Zig, providing developers with a seamless way to interact with Objective-C APIs from Zig projects.
+`objective-zig-gen` is a work-in-progress tool for generating Objective-C bindings from Zig. This project aims to streamline the process of integrating Objective-C code with Zig, providing developers with a seamless way to interact with Objective-C APIs from Zig projects.
 
 ## Goals
 
@@ -16,6 +16,7 @@
 ### Prerequisites
 
 - [Zig](https://ziglang.org/) (latest version recommended)
+- llvm installed through homebrew for libclang (We currently have a naive way to find libclang which is why homebrew is required)
 - A working Objective-C toolchain (Xcode on macOS)
 
 ### Installation
@@ -33,7 +34,7 @@ zig build
 The program works off of a manifest file that list out xtool sdk frameworks, their dependencies, and other information for formatting the types.
 
 ```bash
-zigobjcgen <path/to/manifest.json>
+objective-zig-gen <path/to/manifest.json>
 ```
 Here is an example manifest file
 
