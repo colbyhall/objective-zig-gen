@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-`objective-zig-gen` is a work-in-progress tool for generating Objective-C bindings from Zig. This project aims to streamline the process of integrating Objective-C code with Zig, providing developers with a seamless way to interact with Objective-C APIs from Zig projects.
+`objective-zig-gen` is a work-in-progress tool for generating Objective-C bindings from Zig. This project aims to streamline the process of integrating Objective-C code with Zig, providing developers with a seamless way to interact with Objective-C APIs from Zig projects. You can find generated bindings in [objective-zig](https://github.com/colbyhall/objective-zig).
 
 ## Goals
 
