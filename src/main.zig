@@ -256,20 +256,52 @@ const c = @cImport(
     @cInclude("clang-c/Index.h"),
 );
 
+const FieldEnum = std.meta.FieldEnum;
+fn FieldType(comptime T: type, comptime field: FieldEnum(T)) type {
+    return std.meta.fieldInfo(T, field).type;
+}
+fn fieldToUnion(comptime T: type, comptime field: FieldEnum(T), field_ptr: *FieldType(T, field)) *T {
+    return @fieldParentPtr(@tagName(field), field_ptr);
+}
+
 const Type = union(enum) {
     const Named = struct {
         const Typedef = struct {
             child: ?*Type,
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("typedef", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Field = struct {
             type: *Type,
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("field", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Union = struct {
             fields: std.ArrayList(*Type.Named.Field),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("union", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Struct = struct {
             @"packed": u1 = 0,
             fields: std.ArrayList(*Type.Named.Field),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("struct", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Enum = struct {
             const Value = struct {
@@ -278,21 +310,51 @@ const Type = union(enum) {
             };
             backing: *Type,
             values: std.ArrayList(Value),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("enum", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Param = struct {
             type: *Type,
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("param", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Function = struct {
             result: ?*Type,
             params: std.ArrayList(*Param),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("function", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Method = struct {
             result: ?*Type,
             params: std.ArrayList(*Param),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("method", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Protocol = struct {
             super: ?*Protocol,
             methods: std.ArrayList(*Method),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("protocol", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Interface = struct {
             type_parameters: std.ArrayList([]const u8),
@@ -300,17 +362,32 @@ const Type = union(enum) {
             super: ?*Named,
             protocols: std.ArrayList(*Protocol),
             methods: std.ArrayList(*Method),
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("interface", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const Class = struct {
             protocol: ?*Protocol,
+
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("class", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
         };
         const TypeReference = struct {
             type_parameters: std.ArrayList([]const u8),
-        };
 
-        name: []const u8,
-        cursor: c.CXCursor,
-        tag: union(enum) {
+            fn asNamed(self: *@This()) *Type.Named {
+                const tag_offset = @offsetOf(Type.Named, "tag");
+                const tag: *Tag = @fieldParentPtr("type_reference", self);
+                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
+            }
+        };
+        const Tag = union(enum) {
             typedef: Typedef,
             field: Field,
             @"union": Union,
@@ -323,12 +400,20 @@ const Type = union(enum) {
             interface: Interface,
             class: Class,
             type_reference: TypeReference,
-        },
+        };
+
+        const Origin = union(enum) {
+            framework: []const u8,
+            runtime,
+        };
+
+        name: []const u8,
+        cursor: c.CXCursor,
+        origin: Origin,
+        tag: Tag,
 
         fn asType(self: *@This()) *Type {
-            // HACK: This needs to be based on type info. I haven't even tested if this is right.
-            const parent = @intFromPtr(self) - 8;
-            return @ptrFromInt(parent);
+            return @fieldParentPtr("named", self);
         }
     };
 
@@ -345,6 +430,7 @@ const Type = union(enum) {
     };
     const Pointer = struct {
         underlying: *Type,
+        is_const: u1,
     };
     const FunctionProto = struct {
         result: *Type,
@@ -370,26 +456,16 @@ const Type = union(enum) {
 };
 
 const Registry = struct {
-    const Reference = struct {
-        const Origin = union(enum) {
-            framework: []const u8,
-            runtime,
-        };
-
-        type: *Type.Named,
-        origin: Origin,
-    };
-
     owner: *const Framework,
 
-    typedefs: std.StringArrayHashMap(Reference),
-    unions: std.StringArrayHashMap(Reference),
-    structs: std.StringArrayHashMap(Reference),
-    functions: std.StringArrayHashMap(Reference),
-    enums: std.StringArrayHashMap(Reference),
-    protocols: std.StringArrayHashMap(Reference),
-    classes: std.StringArrayHashMap(Reference),
-    interfaces: std.StringArrayHashMap(Reference),
+    typedefs: std.StringArrayHashMap(*Type.Named),
+    unions: std.StringArrayHashMap(*Type.Named),
+    structs: std.StringArrayHashMap(*Type.Named),
+    functions: std.StringArrayHashMap(*Type.Named),
+    enums: std.StringArrayHashMap(*Type.Named),
+    protocols: std.StringArrayHashMap(*Type.Named),
+    classes: std.StringArrayHashMap(*Type.Named),
+    interfaces: std.StringArrayHashMap(*Type.Named),
 
     const Error = error{
         MultipleTypes,
@@ -397,19 +473,19 @@ const Registry = struct {
     fn init(owner: *const Framework, allocator: Allocator) @This() {
         return .{
             .owner = owner,
-            .typedefs = std.StringArrayHashMap(Reference).init(allocator),
-            .unions = std.StringArrayHashMap(Reference).init(allocator),
-            .structs = std.StringArrayHashMap(Reference).init(allocator),
-            .functions = std.StringArrayHashMap(Reference).init(allocator),
-            .enums = std.StringArrayHashMap(Reference).init(allocator),
-            .protocols = std.StringArrayHashMap(Reference).init(allocator),
-            .classes = std.StringArrayHashMap(Reference).init(allocator),
-            .interfaces = std.StringArrayHashMap(Reference).init(allocator),
+            .typedefs = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .unions = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .structs = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .functions = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .enums = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .protocols = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .classes = std.StringArrayHashMap(*Type.Named).init(allocator),
+            .interfaces = std.StringArrayHashMap(*Type.Named).init(allocator),
         };
     }
 
-    fn insert(self: *@This(), ref: Reference) void {
-        const map = switch (ref.type.tag) {
+    fn insert(self: *@This(), named: *Type.Named) void {
+        const map = switch (named.tag) {
             .typedef => &self.typedefs,
             .@"union" => &self.unions,
             .@"struct" => &self.structs,
@@ -421,7 +497,7 @@ const Registry = struct {
             else => @panic("Type is not supported by Registry."),
         };
 
-        map.put(ref.type.name, ref) catch {
+        map.put(named.name, named) catch {
             @panic("OOM");
         };
     }
@@ -447,40 +523,40 @@ const Registry = struct {
         switch (preference) {
             .none => {
                 if (self.typedefs.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.unions.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.structs.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.enums.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.protocols.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.classes.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
                 if (self.interfaces.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
             },
             .@"enum" => {
                 if (self.enums.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
             },
             .@"struct" => {
                 if (self.structs.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
             },
             .@"union" => {
                 if (self.unions.get(lookup_name)) |u| {
-                    return u.type;
+                    return u;
                 }
             },
         }
@@ -543,7 +619,7 @@ const Builder = struct {
         return null;
     }
 
-    fn analyzeType(self: *@This(), @"type": c.CXType) *Type {
+    fn analyzeType(self: *@This(), origin: Type.Named.Origin, @"type": c.CXType) *Type {
         const result = self.allocType();
         switch (@"type".kind) {
             c.CXType_Void => {
@@ -641,7 +717,7 @@ const Builder = struct {
                 const element = c.clang_getArrayElementType(@"type");
                 result.* = .{
                     .array = .{
-                        .element = self.analyzeType(element),
+                        .element = self.analyzeType(origin, element),
                         .length = @as(u64, @intCast(length)),
                     },
                 };
@@ -651,7 +727,20 @@ const Builder = struct {
                 const underlying_name = c.clang_getTypeSpelling(underlying);
                 defer c.clang_disposeString(underlying_name);
 
-                const name = self.allocName(mem.sliceTo(c.clang_getCString(underlying_name), 0));
+                var name = self.allocName(mem.sliceTo(c.clang_getCString(underlying_name), 0));
+
+                if (mem.containsAtLeast(u8, name, 1, "unnamed at")) {
+                    const offset = mem.indexOf(u8, name, ".h:").?;
+                    const end = name[offset + 3 ..];
+                    const next = mem.indexOf(u8, end, ":").?;
+                    const line = end[0..next];
+                    const paren = mem.indexOf(u8, end, ")").?;
+                    const column = end[next + 1 .. paren];
+                    name = fmt.allocPrintZ(self.arena, "anon{s}{s}", .{ line, column }) catch {
+                        @panic("OOM");
+                    };
+                }
+
                 if (mem.eql(u8, name, "__builtin_va_list")) {
                     result.* = .{
                         .va_list = {},
@@ -663,6 +752,7 @@ const Builder = struct {
                         .named = .{
                             .name = self.allocName(mem.sliceTo(c.clang_getCString(underlying_name), 0)),
                             .cursor = c.clang_getNullCursor(),
+                            .origin = origin,
                             .tag = .{
                                 .type_reference = .{
                                     .type_parameters = std.ArrayList([]const u8).init(self.gpa),
@@ -673,29 +763,32 @@ const Builder = struct {
                 }
             },
             c.CXType_Pointer, c.CXType_ObjCObjectPointer => {
-                const underlying = self.analyzeType(c.clang_getPointeeType(@"type"));
+                const is_const = c.clang_isConstQualifiedType(@"type");
+                const underlying = self.analyzeType(origin, c.clang_getPointeeType(@"type"));
                 result.* = .{
                     .pointer = .{
                         .underlying = underlying,
+                        .is_const = @intCast(is_const),
                     },
                 };
             },
             c.CXType_BlockPointer => {
-                const underlying = self.analyzeType(c.clang_getPointeeType(@"type"));
+                const underlying = self.analyzeType(origin, c.clang_getPointeeType(@"type"));
                 result.* = .{
                     .block_pointer = .{
                         .underlying = underlying,
+                        .is_const = 0,
                     },
                 };
             },
             c.CXType_FunctionProto => {
-                const result_type = self.analyzeType(c.clang_getResultType(@"type"));
+                const result_type = self.analyzeType(origin, c.clang_getResultType(@"type"));
                 const num_args: usize = @intCast(c.clang_getNumArgTypes(@"type"));
                 const params = self.arena.alloc(*Type, num_args) catch {
                     @panic("OOM");
                 };
                 for (0..num_args) |index| {
-                    params[index] = self.analyzeType(c.clang_getArgType(@"type", @intCast(index)));
+                    params[index] = self.analyzeType(origin, c.clang_getArgType(@"type", @intCast(index)));
                 }
                 result.* = .{
                     .function_proto = .{
@@ -721,10 +814,11 @@ const Builder = struct {
                 }
             },
             c.CXType_IncompleteArray => {
-                const underlying = self.analyzeType(c.clang_getArrayElementType(@"type"));
+                const underlying = self.analyzeType(origin, c.clang_getArrayElementType(@"type"));
                 result.* = .{
                     .pointer = .{
                         .underlying = underlying,
+                        .is_const = 0,
                     },
                 };
             },
@@ -739,6 +833,7 @@ const Builder = struct {
             },
             c.CXType_ObjCObject, c.CXType_ObjCTypeParam => {
                 std.log.warn("TODO: ObjCObject", .{});
+                result.* = .{ .void = {} };
             },
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
@@ -838,6 +933,9 @@ fn parseFramework(
             .named = .{
                 .name = "__uint128_t",
                 .cursor = c.clang_getNullCursor(),
+                .origin = .{
+                    .runtime = {},
+                },
                 .tag = .{
                     .typedef = .{
                         .child = _u128_t,
@@ -845,12 +943,7 @@ fn parseFramework(
                 },
             },
         };
-        builder.registry.insert(.{
-            .type = &typedef.named,
-            .origin = .{
-                .runtime = {},
-            },
-        });
+        builder.registry.insert(&typedef.named);
     }
     _ = c.clang_visitChildren(cursor, visitor, &builder);
     args.result.* = builder.registry;
@@ -878,7 +971,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         std.debug.assert(builder.stack.items.len == 0);
     }
 
-    const origin: Registry.Reference.Origin = blk: {
+    const origin: Type.Named.Origin = blk: {
         if (file != null) {
             const file_name = c.clang_getFileName(file);
             defer c.clang_disposeString(file_name);
@@ -889,26 +982,32 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 if (mem.lastIndexOf(u8, name, "/")) |start| {
                     name = name[start + 1 ..];
                 }
-                break :blk .{ .framework = name };
+                break :blk .{ .framework = builder.allocName(name) };
             }
         }
         break :blk .{ .runtime = {} };
     };
     const name_spelling = c.clang_getCursorSpelling(cursor);
-    const name = mem.sliceTo(c.clang_getCString(name_spelling), 0);
+    var name = mem.sliceTo(c.clang_getCString(name_spelling), 0);
+    if (c.clang_Cursor_isAnonymous(cursor) > 0) {
+        name = fmt.allocPrintZ(builder.arena, "anon{}{}", .{ line, column }) catch {
+            @panic("OOM");
+        };
+    }
     defer c.clang_disposeString(name_spelling);
 
     const kind = c.clang_getCursorKind(cursor);
     switch (kind) {
         c.CXCursor_TypedefDecl => {
             const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
-            const child = builder.analyzeType(child_type);
+            const child = builder.analyzeType(origin, child_type);
 
             const typedef = builder.allocType();
             typedef.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .typedef = .{
                             .child = child,
@@ -916,10 +1015,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &typedef.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&typedef.named);
 
             return c.CXChildVisit_Continue;
         },
@@ -929,6 +1025,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .@"union" = .{
                             .fields = std.ArrayList(*Type.Named.Field).init(builder.gpa),
@@ -936,10 +1033,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &union_decl.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&union_decl.named);
             builder.push(&union_decl.named);
 
             return c.CXChildVisit_Recurse;
@@ -950,6 +1044,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .@"struct" = .{
                             .fields = std.ArrayList(*Type.Named.Field).init(builder.gpa),
@@ -957,10 +1052,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &struct_decl.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&struct_decl.named);
             builder.push(&struct_decl.named);
 
             return c.CXChildVisit_Recurse;
@@ -979,12 +1071,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_FieldDecl => {
-            const field_inner = builder.analyzeType(c.clang_getCursorType(cursor));
+            const field_inner = builder.analyzeType(origin, c.clang_getCursorType(cursor));
             const field = builder.allocType();
             field.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .field = .{
                             .type = field_inner,
@@ -1009,12 +1102,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_FunctionDecl => {
-            const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
+            const result = builder.analyzeType(origin, c.clang_getCursorResultType(cursor));
             const function_decl = builder.allocType();
             function_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .function = .{
                             .params = std.ArrayList(*Type.Named.Param).init(builder.gpa),
@@ -1023,21 +1117,19 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &function_decl.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&function_decl.named);
             builder.push(&function_decl.named);
 
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ParmDecl => {
-            const param_inner = builder.analyzeType(c.clang_getCursorType(cursor));
+            const param_inner = builder.analyzeType(origin, c.clang_getCursorType(cursor));
             const param = builder.allocType();
             param.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .param = .{
                             .type = param_inner,
@@ -1082,12 +1174,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_EnumDecl => {
-            const backing = builder.analyzeType(c.clang_getEnumDeclIntegerType(cursor));
+            const backing = builder.analyzeType(origin, c.clang_getEnumDeclIntegerType(cursor));
             const enum_decl = builder.allocType();
             enum_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .@"enum" = .{
                             .backing = backing,
@@ -1097,10 +1190,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 },
             };
             builder.push(&enum_decl.named);
-            builder.registry.insert(.{
-                .type = &enum_decl.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&enum_decl.named);
 
             return c.CXChildVisit_Recurse;
         },
@@ -1127,6 +1217,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .protocol = .{
                             .super = null,
@@ -1135,22 +1226,19 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &protocol.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&protocol.named);
             builder.push(&protocol.named);
 
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_ObjCInstanceMethodDecl, c.CXCursor_ObjCClassMethodDecl => {
-            const result = builder.analyzeType(c.clang_getCursorResultType(cursor));
+            const result = builder.analyzeType(origin, c.clang_getCursorResultType(cursor));
             const method = builder.allocType();
             method.* = .{
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
-
+                    .origin = origin,
                     .tag = .{
                         .method = .{
                             .result = result,
@@ -1191,6 +1279,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .class = .{
                             .protocol = null,
@@ -1198,10 +1287,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &class.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&class.named);
             builder.push(&class.named);
 
             return c.CXChildVisit_Recurse;
@@ -1212,6 +1298,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .interface = .{
                             .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
@@ -1222,10 +1309,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
-            builder.registry.insert(.{
-                .type = &interface.named,
-                .origin = origin,
-            });
+            builder.registry.insert(&interface.named);
             builder.push(&interface.named);
 
             return c.CXChildVisit_Recurse;
@@ -1242,6 +1326,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 .named = .{
                     .name = builder.allocName(name),
                     .cursor = cursor,
+                    .origin = origin,
                     .tag = .{
                         .type_reference = .{
                             .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
@@ -1321,10 +1406,18 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
 
 const Renderer = struct {
     writer: std.fs.File.Writer,
+    frameworks: *const std.StringHashMap(*const Framework),
+    registry: *const Registry,
 
-    fn init(writer: std.fs.File.Writer) @This() {
+    fn init(
+        writer: std.fs.File.Writer,
+        frameworks: *const std.StringHashMap(*const Framework),
+        registry: *const Registry,
+    ) @This() {
         return .{
             .writer = writer,
+            .frameworks = frameworks,
+            .registry = registry,
         };
     }
 
@@ -1332,6 +1425,222 @@ const Renderer = struct {
         self.writer.print(format, args) catch {
             @panic("Failed to write to output file.");
         };
+    }
+
+    fn renderFrameworkDecl(self: *@This(), named: *Type.Named) void {
+        switch (named.origin) {
+            .framework => |f| if (mem.eql(u8, f, self.registry.owner.name)) {
+                self.renderNamedDecl(named);
+            },
+            else => {},
+        }
+    }
+
+    fn renderNamedName(self: *@This(), named: *Type.Named) void {
+        switch (named.origin) {
+            .runtime => self.render("objc.{s}", .{named.name}),
+            .framework => |f| {
+                if (self.frameworks.get(f)) |framework| {
+                    var found = false;
+                    if (mem.eql(u8, f, self.registry.owner.name)) {
+                        found = true;
+                    } else {
+                        for (self.registry.owner.dependencies) |d| {
+                            if (mem.eql(u8, d, f)) {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!found) {
+                        if (self.frameworks.contains(f)) {
+                            std.debug.print(
+                                "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest.\n",
+                                .{
+                                    self.registry.owner.name,
+                                    f,
+                                    self.registry.owner.name,
+                                },
+                            );
+                        }
+                        // Let the user know that the framework is also not in the manifest to ease debugging.
+                        else {
+                            std.debug.print(
+                                "{s} depends on framework {s} but is not listed as a dependency to {s} in the manifest. {s} is not listed in the manifest at all.\n",
+                                .{
+                                    self.registry.owner.name,
+                                    f,
+                                    self.registry.owner.name,
+                                    f,
+                                },
+                            );
+                        }
+                        unreachable;
+                    }
+
+                    var result = named.name;
+                    if (framework.remove_prefix.len > 0) {
+                        if (mem.startsWith(u8, named.name, framework.remove_prefix)) {
+                            result = result[framework.remove_prefix.len..];
+                        }
+                    }
+                    if (framework != self.registry.owner) {
+                        self.render("{s}.", .{framework.output_file});
+                    }
+                    self.render("{s}", .{result});
+                }
+            },
+        }
+    }
+
+    fn renderNamedDecl(self: *@This(), named: *Type.Named) void {
+        switch (named.tag) {
+            .@"struct" => |s| {
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = extern ", .{});
+                if (s.@"packed" > 0) {
+                    self.render("packed ", .{});
+                }
+                self.render("struct {{", .{});
+
+                if (s.fields.items.len > 0) {
+                    self.render("\n", .{});
+                    self.renderFieldDecls(s.fields.items);
+                }
+
+                self.render("}};\n\n", .{});
+            },
+            .@"enum" => |s| {
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = enum(", .{});
+                self.renderTypeAsIdentifier(s.backing);
+                self.render(") {{", .{});
+
+                if (s.values.items.len > 0) {
+                    self.render("\n", .{});
+
+                    for (s.values.items) |v| {
+                        var name = v.name;
+
+                        // Remove the prefix from enum entries
+                        if (self.registry.owner.remove_prefix.len > 0) {
+                            if (mem.startsWith(u8, name, self.registry.owner.remove_prefix)) {
+                                name = name[self.registry.owner.remove_prefix.len..];
+                            }
+                        }
+                        self.render("    {s} = {},\n", .{ name, v.value });
+                    }
+                }
+
+                self.render("}};\n\n", .{});
+            },
+            .@"union" => |s| {
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = extern union {{", .{});
+
+                if (s.fields.items.len > 0) {
+                    self.render("\n", .{});
+                    self.renderFieldDecls(s.fields.items);
+                }
+
+                self.render("}};\n\n", .{});
+            },
+            .typedef => |t| {
+                // Skip C types that have typedefs to add them to the C global namespace.
+                switch (t.child.?.*) {
+                    .named => |n| {
+                        switch (n.tag) {
+                            .@"struct", .@"union", .@"enum" => return,
+                            else => {},
+                        }
+                    },
+                    else => {},
+                }
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = ", .{});
+                self.renderTypeAsIdentifier(t.child.?);
+                self.render(";\n", .{});
+            },
+            else => unreachable,
+        }
+    }
+
+    fn renderFieldDecls(self: *@This(), fields: []const *Type.Named.Field) void {
+        for (fields) |f| {
+            const n = f.asNamed();
+
+            // Change the name of fields that conflict with zig keywords
+            var name = n.name;
+            if (mem.eql(u8, name, "error")) {
+                name = "@\"error\"";
+            } else if (mem.eql(u8, name, "type")) {
+                name = "@\"type\"";
+            }
+
+            self.render("    {s}: ", .{name});
+            self.renderTypeAsIdentifier(f.type);
+            self.render(",\n", .{});
+        }
+    }
+
+    fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
+        switch (@"type".*) {
+            .objc_id => self.render("*anyopaque", .{}),
+            .objc_class => self.render("*objc.Class", .{}),
+            .void => self.render("void", .{}),
+            .int => |i| {
+                const num_bits: u32 = @as(u32, i.size) * 8;
+                if (i.signed > 0) {
+                    self.render("i{}", .{num_bits});
+                } else {
+                    self.render("u{}", .{num_bits});
+                }
+            },
+            .float => |f| {
+                const num_bits: u32 = @as(u32, f.size) * 8;
+                self.render("f{}", .{num_bits});
+            },
+            .pointer, .block_pointer => |p| {
+                self.render("*", .{});
+                if (p.is_const > 0) {
+                    self.render("const ", .{});
+                }
+                if (std.meta.activeTag(p.underlying.*) == .void) {
+                    self.render("anyopaque", .{});
+                } else {
+                    self.renderTypeAsIdentifier(p.underlying);
+                }
+            },
+            .array => |a| {
+                self.render("[{}] ", .{a.length});
+                self.renderTypeAsIdentifier(a.element);
+            },
+            .function_proto => |f| {
+                self.render("fn(", .{});
+                for (f.params, 0..) |p, index| {
+                    self.renderTypeAsIdentifier(p);
+                    if (f.params.len > 3 or index < f.params.len - 1) {
+                        self.render(", ", .{});
+                    }
+                }
+                self.render(") ", .{});
+                self.renderTypeAsIdentifier(f.result);
+            },
+            .named => |*n| switch (n.tag) {
+                else => {
+                    self.renderNamedName(n);
+                },
+            },
+            else => {
+                std.log.err("Unhandled type kind {}.", .{std.meta.activeTag(@"type".*)});
+                unreachable;
+            },
+        }
     }
 };
 
@@ -1349,12 +1658,47 @@ fn renderFramework(args: struct {
     };
     defer output_file.close();
 
-    var renderer = Renderer.init(output_file.writer());
-    renderer.render("// THIS FILE IS AUTOGENERATED. MODIFICATIONS WILL NOT BE MAINTAINED.\n\n", .{});
-    renderer.render("const std = @import(\"std\");\n", .{});
-    renderer.render("const objc = @import(\"objc.zig\"); // Objective-C Runtime in zig.\n", .{});
+    var self = Renderer.init(output_file.writer(), args.frameworks, args.registry);
+
+    self.render("// THIS FILE IS AUTOGENERATED. MODIFICATIONS WILL NOT BE MAINTAINED.\n\n", .{});
+    self.render("const std = @import(\"std\");\n", .{});
+    self.render("const objc = @import(\"objc.zig\"); // Objective-C Runtime in zig.\n", .{});
     for (args.registry.owner.dependencies) |d| {
         const dep = args.frameworks.get(d).?;
-        renderer.render("const {s} = @import(\"{s}.zig\"); // Framework dependency {s}.\n", .{ dep.name, dep.output_file, dep.name });
+        self.render("const {s} = @import(\"{s}.zig\"); // Framework dependency {s}.\n", .{ dep.output_file, dep.output_file, dep.name });
+    }
+    self.render("\n", .{});
+
+    // Render the structs
+    {
+        var iter = self.registry.structs.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
+    }
+    // Render the unions
+    {
+        var iter = self.registry.unions.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
+    }
+    // Render the enums
+    {
+        var iter = self.registry.enums.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
+    }
+    // Render the typedefs
+    {
+        var iter = self.registry.typedefs.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
     }
 }
