@@ -3,6 +3,7 @@ const mem = std.mem;
 const Allocator = mem.Allocator;
 const fmt = std.fmt;
 const ascii = std.ascii;
+const meta = std.meta;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
 
@@ -266,14 +267,6 @@ const c = @cImport(
     @cInclude("clang-c/Index.h"),
 );
 
-const FieldEnum = std.meta.FieldEnum;
-fn FieldType(comptime T: type, comptime field: FieldEnum(T)) type {
-    return std.meta.fieldInfo(T, field).type;
-}
-fn fieldToUnion(comptime T: type, comptime field: FieldEnum(T), field_ptr: *FieldType(T, field)) *T {
-    return @fieldParentPtr(@tagName(field), field_ptr);
-}
-
 const Type = union(enum) {
     const Named = struct {
         const Typedef = struct {
@@ -478,6 +471,12 @@ const Registry = struct {
     classes: std.StringArrayHashMap(*Type.Named),
     interfaces: std.StringArrayHashMap(*Type.Named),
 
+    order: std.ArrayList(Order),
+    const Order = struct {
+        tag: meta.Tag(Type.Named.Tag),
+        name: []const u8,
+    };
+
     const Error = error{
         MultipleTypes,
     } || Allocator.Error;
@@ -492,11 +491,13 @@ const Registry = struct {
             .protocols = std.StringArrayHashMap(*Type.Named).init(allocator),
             .classes = std.StringArrayHashMap(*Type.Named).init(allocator),
             .interfaces = std.StringArrayHashMap(*Type.Named).init(allocator),
+
+            .order = std.ArrayList(Order).init(allocator),
         };
     }
 
-    fn insert(self: *@This(), named: *Type.Named) void {
-        const map = switch (named.tag) {
+    fn getMap(self: *@This(), tag: meta.Tag(Type.Named.Tag)) *std.StringArrayHashMap(*Type.Named) {
+        const map = switch (tag) {
             .typedef => &self.typedefs,
             .@"union" => &self.unions,
             .@"struct" => &self.structs,
@@ -508,12 +509,29 @@ const Registry = struct {
             else => @panic("Type is not supported by Registry."),
         };
 
+        return map;
+    }
+
+    fn insert(self: *@This(), named: *Type.Named) void {
+        const tag = meta.activeTag(named.tag);
+        const map = self.getMap(tag);
+
+        if (!map.contains(named.name)) {
+            self.order.append(.{ .tag = tag, .name = named.name }) catch {
+                @panic("OOM");
+            };
+        }
+
         map.put(named.name, named) catch {
             @panic("OOM");
         };
     }
 
-    fn lookup(self: @This(), name: []const u8) ?*Type.Named {
+    fn lookup(self: *@This(), tag: meta.Tag(Type.Named.Tag), name: []const u8) ?*Type.Named {
+        return self.getMap(tag).get(name);
+    }
+
+    fn lookupElaborated(self: *@This(), name: []const u8) ?*Type.Named {
         var lookup_name = name;
 
         const Preference = enum { none, @"enum", @"struct", @"union" };
@@ -756,7 +774,7 @@ const Builder = struct {
                     result.* = .{
                         .va_list = {},
                     };
-                } else if (self.registry.lookup(name)) |u| {
+                } else if (self.registry.lookupElaborated(name)) |u| {
                     return u.asType();
                 } else {
                     result.* = .{
@@ -814,7 +832,7 @@ const Builder = struct {
             c.CXType_Typedef => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookup(name)) |u| {
+                if (self.registry.lookupElaborated(name)) |u| {
                     return u.asType();
                 } else {
                     if (mem.eql(u8, name, "instancetype")) {
@@ -853,7 +871,7 @@ const Builder = struct {
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookup(name)) |u| {
+                if (self.registry.lookupElaborated(name)) |u| {
                     return u.asType();
                 } else {
                     if (mem.eql(u8, name, "Protocol")) {
@@ -1080,7 +1098,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     s.@"packed" = 1;
                 },
                 else => {
-                    std.log.err("Unhandled parent tag {s} of {}", .{ parent.name, std.meta.activeTag(parent.tag) });
+                    std.log.err("Unhandled parent tag {s} of {}", .{ parent.name, meta.activeTag(parent.tag) });
                     unreachable;
                 },
             }
@@ -1277,7 +1295,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     };
                 },
                 else => {
-                    std.log.err("Unhandled parent for ObjCMethod {}", .{std.meta.activeTag(parent.tag)});
+                    std.log.err("Unhandled parent for ObjCMethod {}", .{meta.activeTag(parent.tag)});
                     unreachable;
                 },
             }
@@ -1452,12 +1470,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
 const Renderer = struct {
     writer: std.fs.File.Writer,
     frameworks: *const std.StringHashMap(*const Framework),
-    registry: *const Registry,
+    registry: *Registry,
 
     fn init(
         writer: std.fs.File.Writer,
         frameworks: *const std.StringHashMap(*const Framework),
-        registry: *const Registry,
+        registry: *Registry,
     ) @This() {
         return .{
             .writer = writer,
@@ -1742,6 +1760,7 @@ const Renderer = struct {
                 }
                 self.render("}});\n    }}\n", .{});
             },
+            .type_reference, .class, .function => {},
             else => unreachable,
         }
     }
@@ -1795,10 +1814,10 @@ const Renderer = struct {
                     self.render("?", .{});
                 }
                 self.render("*", .{});
-                if (p.@"const" > 0 or std.meta.activeTag(p.underlying.*) == .function_proto) {
+                if (p.@"const" > 0 or meta.activeTag(p.underlying.*) == .function_proto) {
                     self.render("const ", .{});
                 }
-                if (std.meta.activeTag(p.underlying.*) == .void) {
+                if (meta.activeTag(p.underlying.*) == .void) {
                     self.render("anyopaque", .{});
                 } else {
                     self.renderTypeAsIdentifier(p.underlying);
@@ -1831,7 +1850,7 @@ const Renderer = struct {
                             const current = name[0..next_colon];
                             if (index > 0) {
                                 // Capitalize the first letter of the word to match zig coding style.
-                                _ = self.writer.writeByte(std.ascii.toUpper(current[0])) catch {
+                                _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
                                     unreachable;
                                 };
                                 _ = self.writer.write(current[1..]) catch {
@@ -1855,7 +1874,7 @@ const Renderer = struct {
                 },
             },
             else => {
-                std.log.err("Unhandled type kind {}.", .{std.meta.activeTag(@"type".*)});
+                std.log.err("Unhandled type kind {}.", .{meta.activeTag(@"type".*)});
                 unreachable;
             },
         }
@@ -1866,7 +1885,7 @@ fn renderFramework(args: struct {
     gpa: Allocator,
     output: std.fs.Dir,
     frameworks: *const std.StringHashMap(*const Framework),
-    registry: *const Registry,
+    registry: *Registry,
 }) void {
     const path = fmt.allocPrint(args.gpa, "{s}.zig", .{args.registry.owner.output_file}) catch {
         @panic("OOM");
@@ -1887,52 +1906,8 @@ fn renderFramework(args: struct {
     }
     self.render("\n", .{});
 
-    // Render the structs
-    {
-        var iter = self.registry.structs.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
-    }
-    // Render the unions
-    {
-        var iter = self.registry.unions.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
-    }
-    // Render the enums
-    {
-        var iter = self.registry.enums.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
-    }
-    // Render the typedefs
-    {
-        var iter = self.registry.typedefs.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
-    }
-    // Render the protocols
-    {
-        var iter = self.registry.protocols.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
-    }
-    // Render the interfaces
-    {
-        var iter = self.registry.interfaces.iterator();
-        while (iter.next()) |e| {
-            const ref = e.value_ptr;
-            self.renderFrameworkDecl(ref.*);
-        }
+    for (self.registry.order.items) |o| {
+        const ref = self.registry.lookup(o.tag, o.name);
+        self.renderFrameworkDecl(ref.?);
     }
 }
