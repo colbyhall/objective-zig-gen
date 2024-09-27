@@ -15,6 +15,16 @@
         ]
     },
     {
+        "name": "AppKit",
+        "output_file": "app_kit",
+
+        "remove_prefix": "NS",
+        "dependencies": [
+            "CoreFoundation",
+            "Foundation"
+        ]
+    },
+    {
         "name": "Metal",
         "output_file": "metal",
 

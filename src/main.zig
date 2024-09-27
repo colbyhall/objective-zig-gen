@@ -1427,6 +1427,9 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_PureAttr,
         c.CXCursor_ObjCException,
         c.CXCursor_ObjCReturnsInnerPointer,
+        c.CXCursor_ObjCExplicitProtocolImpl,
+        c.CXCursor_IBActionAttr,
+        c.CXCursor_ObjCRequiresSuper,
         => {},
         else => {
             std.log.err(
