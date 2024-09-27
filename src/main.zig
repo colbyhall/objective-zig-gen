@@ -246,6 +246,15 @@ pub fn main() !void {
                 });
             }
             thread_pool.waitAndWork(&render_framework_work);
+
+            _ = try std.process.Child.run(.{
+                .allocator = allocator,
+                .argv = &.{
+                    "zig",
+                    "fmt",
+                    "output_path",
+                },
+            });
         },
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
         .exit => {},
@@ -429,8 +438,9 @@ const Type = union(enum) {
         length: u64,
     };
     const Pointer = struct {
+        @"const": u1,
+        nullable: u1,
         underlying: *Type,
-        is_const: u1,
     };
     const FunctionProto = struct {
         result: *Type,
@@ -763,12 +773,14 @@ const Builder = struct {
                 }
             },
             c.CXType_Pointer, c.CXType_ObjCObjectPointer => {
-                const is_const = c.clang_isConstQualifiedType(@"type");
+                const @"const" = c.clang_isConstQualifiedType(@"type");
+                const nullable = c.clang_Type_getNullability(@"type") != c.CXTypeNullability_NonNull;
                 const underlying = self.analyzeType(origin, c.clang_getPointeeType(@"type"));
                 result.* = .{
                     .pointer = .{
+                        .@"const" = @intCast(@"const"),
+                        .nullable = if (nullable) 1 else 0,
                         .underlying = underlying,
-                        .is_const = @intCast(is_const),
                     },
                 };
             },
@@ -776,8 +788,9 @@ const Builder = struct {
                 const underlying = self.analyzeType(origin, c.clang_getPointeeType(@"type"));
                 result.* = .{
                     .block_pointer = .{
+                        .@"const" = 0,
+                        .nullable = 0,
                         .underlying = underlying,
-                        .is_const = 0,
                     },
                 };
             },
@@ -817,8 +830,9 @@ const Builder = struct {
                 const underlying = self.analyzeType(origin, c.clang_getArrayElementType(@"type"));
                 result.* = .{
                     .pointer = .{
+                        .@"const" = 0,
+                        .nullable = 0,
                         .underlying = underlying,
-                        .is_const = 0,
                     },
                 };
             },
@@ -1594,13 +1608,14 @@ const Renderer = struct {
                 self.render(";\n\n", .{});
             },
             .protocol => |p| {
+                self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
                 self.render("pub const ", .{});
                 self.renderNamedName(named);
                 self.render(" = opaque {{", .{});
                 self.render("\n", .{});
 
                 self.render(
-                    "    pub const InternalInfo = objc.ExternProtocol(@This, &.{{",
+                    "    pub const InternalInfo = objc.ExternProtocol(@This(), &.{{",
                     .{},
                 );
 
@@ -1627,13 +1642,14 @@ const Renderer = struct {
                 self.render("}};\n\n", .{});
             },
             .interface => |i| {
+                self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
                 self.render("pub const ", .{});
                 self.renderNamedName(named);
                 self.render(" = opaque {{", .{});
                 self.render("\n", .{});
 
                 self.render(
-                    "    pub const InternalInfo = objc.ExternalClass(\"{s}\", @This, ",
+                    "    pub const InternalInfo = objc.ExternalClass(\"{s}\", @This(), ",
                     .{named.name},
                 );
                 if (i.super) |super| {
@@ -1713,6 +1729,8 @@ const Renderer = struct {
             result = "@\"error\"";
         } else if (mem.eql(u8, result, "type")) {
             result = "@\"type\"";
+        } else if (mem.eql(u8, result, "align")) {
+            result = "@\"align\"";
         }
         self.render("{s}", .{result});
     }
@@ -1731,10 +1749,10 @@ const Renderer = struct {
 
     fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
         switch (@"type".*) {
-            .objc_id => self.render("*anyopaque", .{}),
+            .objc_id => self.render("*objc.Id", .{}),
             .objc_class => self.render("*objc.Class", .{}),
-            .objc_sel => self.render("selTODO", .{}),
-            .instancetype => self.render("*@This", .{}),
+            .objc_sel => self.render("*objc.SEL", .{}),
+            .instancetype => self.render("*@This()", .{}),
             .void => self.render("void", .{}),
             .int => |i| {
                 const num_bits: u32 = @as(u32, i.size) * 8;
@@ -1749,8 +1767,11 @@ const Renderer = struct {
                 self.render("f{}", .{num_bits});
             },
             .pointer, .block_pointer => |p| {
+                if (p.nullable > 0) {
+                    self.render("?", .{});
+                }
                 self.render("*", .{});
-                if (p.is_const > 0) {
+                if (p.@"const" > 0 or std.meta.activeTag(p.underlying.*) == .function_proto) {
                     self.render("const ", .{});
                 }
                 if (std.meta.activeTag(p.underlying.*) == .void) {
@@ -1771,7 +1792,7 @@ const Renderer = struct {
                         self.render(", ", .{});
                     }
                 }
-                self.render(") ", .{});
+                self.render(") callconv(.C) ", .{});
                 self.renderTypeAsIdentifier(f.result);
             },
             .named => |*n| switch (n.tag) {

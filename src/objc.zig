@@ -50,6 +50,7 @@ pub const Id = opaque {
     pub const release = objc_release;
     pub const autorelease = objc_autorelease;
 };
+pub const SEL = opaque {};
 
 /// Calls `objc_msgSend(receiver, selector, args...)` (or `objc_msgSend_stret` if needed).
 ///

@@ -6,66 +6,23 @@
         "remove_prefix": "CF"
     },
     {
-        "name": "Security",
-        "output_file": "security",
-
-        "dependencies": [
-            "CoreFoundation"
-        ]
-    },
-    {
-        "name": "IOKit",
-        "output_file": "iokit",
-
-        "header_override": "IOKitLib.h",
-        "remove_prefix": "IO",
-        "dependencies": [
-            "CoreFoundation"
-        ]
-    },
-    {
-        "name": "DiskArbitration",
-        "output_file": "disk_arbitration",
-
-        "remove_prefix": "DA",
-        "dependencies": [
-            "CoreFoundation",
-            "IOKit"
-        ]
-    },
-    {
-        "name": "CFNetwork",
-        "output_file": "cfnetwork",
-
-        "remove_prefix": "CF",
-        "dependencies": [
-            "CoreFoundation"
-        ]
-    },
-        {
-        "name": "CoreServices",
-        "output_file": "cs",
-
-        "dependencies": [
-            "CoreFoundation",
-            "IOKit",
-            "DiskArbitration",
-            "CFNetwork",
-            "Security"
-        ]
-    },
-    {
         "name": "Foundation",
         "output_file": "ns",
 
         "remove_prefix": "NS",
         "dependencies": [
-            "CoreServices",
+            "CoreFoundation"
+        ]
+    },
+    {
+        "name": "Metal",
+        "output_file": "metal",
+
+        "remove_prefix": "MTL",
+        "dependencies": [
             "CoreFoundation",
-            "Security",
-            "IOKit",
-            "DiskArbitration",
-            "CFNetwork"
+            "Foundation"
         ]
     }
+
 ]
