@@ -18,6 +18,7 @@
         "output_file": "iokit",
 
         "header_override": "IOKitLib.h",
+        "remove_prefix": "IO",
         "dependencies": [
             "CoreFoundation"
         ]
@@ -26,6 +27,7 @@
         "name": "DiskArbitration",
         "output_file": "disk_arbitration",
 
+        "remove_prefix": "DA",
         "dependencies": [
             "CoreFoundation",
             "IOKit"
@@ -35,6 +37,7 @@
         "name": "CFNetwork",
         "output_file": "cfnetwork",
 
+        "remove_prefix": "CF",
         "dependencies": [
             "CoreFoundation"
         ]

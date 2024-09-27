@@ -347,7 +347,7 @@ const Type = union(enum) {
             }
         };
         const Protocol = struct {
-            super: ?*Protocol,
+            inherits: std.ArrayList(*Named),
             methods: std.ArrayList(*Method),
 
             fn asNamed(self: *@This()) *Type.Named {
@@ -1220,7 +1220,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .origin = origin,
                     .tag = .{
                         .protocol = .{
-                            .super = null,
+                            .inherits = std.ArrayList(*Type.Named).init(builder.gpa),
                             .methods = std.ArrayList(*Type.Named.Method).init(builder.gpa),
                         },
                     },
@@ -1316,6 +1316,33 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_ObjCProtocolRef => {
             std.log.warn("TODO: Protocol Ref {s}", .{name});
+
+            if (builder.parent()) |parent| {
+                switch (parent.tag) {
+                    .protocol => |*i| {
+                        var super: *Type.Named = undefined;
+                        if (builder.registry.protocols.get(name)) |s| {
+                            super = s;
+                        } else {
+                            const ref = builder.allocType();
+                            ref.* = .{
+                                .named = .{
+                                    .name = builder.allocName(name),
+                                    .cursor = cursor,
+                                    .origin = origin,
+                                    .tag = .{ .class = .{ .protocol = null } },
+                                },
+                            };
+                            super = &ref.named;
+                        }
+                        i.inherits.append(super) catch {
+                            @panic("OOM");
+                        };
+                    },
+                    .interface => {},
+                    else => {},
+                }
+            }
         },
         c.CXCursor_ObjCIvarDecl => {
             std.log.warn("TODO: Ivar {s}", .{name});
@@ -1564,25 +1591,139 @@ const Renderer = struct {
                 self.renderNamedName(named);
                 self.render(" = ", .{});
                 self.renderTypeAsIdentifier(t.child.?);
-                self.render(";\n", .{});
+                self.render(";\n\n", .{});
+            },
+            .protocol => |p| {
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = opaque {{", .{});
+                self.render("\n", .{});
+
+                self.render(
+                    "    pub const InternalInfo = objc.ExternProtocol(@This, &.{{",
+                    .{},
+                );
+
+                for (p.inherits.items) |n| {
+                    self.renderNamedName(n);
+                    self.render(", ", .{});
+                }
+                self.render("}});\n", .{});
+
+                self.render("    pub const as = InternalInfo.as;\n", .{});
+                self.render("    pub const retain = InternalInfo.retain;\n", .{});
+                self.render("    pub const release = InternalInfo.release;\n", .{});
+                self.render("    pub const autorelease = InternalInfo.autorelease;\n", .{});
+
+                if (p.methods.items.len > 0) {
+                    self.render("\n", .{});
+
+                    for (p.methods.items) |m| {
+                        self.renderNamedDecl(m.asNamed());
+                        self.render("\n", .{});
+                    }
+                }
+
+                self.render("}};\n\n", .{});
+            },
+            .interface => |i| {
+                self.render("pub const ", .{});
+                self.renderNamedName(named);
+                self.render(" = opaque {{", .{});
+                self.render("\n", .{});
+
+                self.render(
+                    "    pub const InternalInfo = objc.ExternalClass(\"{s}\", @This, ",
+                    .{named.name},
+                );
+                if (i.super) |super| {
+                    self.renderNamedName(super);
+                } else {
+                    self.render("objc.NSObject", .{});
+                }
+                self.render(", &.{{", .{});
+                for (i.protocols.items) |inh| {
+                    self.renderTypeAsIdentifier(inh.asNamed().asType());
+                    self.render(", ", .{});
+                }
+
+                self.render("}});\n", .{});
+
+                self.render("    pub const as = InternalInfo.as;\n", .{});
+                self.render("    pub const retain = InternalInfo.retain;\n", .{});
+                self.render("    pub const release = InternalInfo.release;\n", .{});
+                self.render("    pub const autorelease = InternalInfo.autorelease;\n", .{});
+                self.render("    pub const new = InternalInfo.new;\n", .{});
+                self.render("    pub const alloc = InternalInfo.alloc;\n", .{});
+                self.render("    pub const allocInit = InternalInfo.allocInit;\n", .{});
+
+                if (i.methods.items.len > 0) {
+                    self.render("\n", .{});
+
+                    for (i.methods.items) |m| {
+                        self.renderNamedDecl(m.asNamed());
+                        self.render("\n", .{});
+                    }
+                }
+
+                self.render("}};\n\n", .{});
+            },
+            .method => |m| {
+                self.render("    pub fn ", .{});
+                self.renderTypeAsIdentifier(named.asType());
+                self.render("(self: *@This()", .{});
+
+                if (m.params.items.len > 0) {
+                    self.render(", ", .{});
+                    for (m.params.items, 0..) |param, index| {
+                        self.renderFieldOrParamName(param.asNamed().name);
+                        self.render(": ", .{});
+                        self.renderTypeAsIdentifier(param.type);
+                        if (m.params.items.len > 3 or index < m.params.items.len - 1) {
+                            self.render(", ", .{});
+                        }
+                    }
+                }
+
+                self.render(") ", .{});
+                self.renderTypeAsIdentifier(m.result.?);
+                self.render(" {{\n", .{});
+                self.render(
+                    "        return objc.msgSend(self, \"{s}\", ",
+                    .{named.name},
+                );
+                self.renderTypeAsIdentifier(m.result.?);
+                self.render(", .{{", .{});
+                for (m.params.items, 0..) |param, index| {
+                    self.renderFieldOrParamName(param.asNamed().name);
+                    if (m.params.items.len > 3 or index < m.params.items.len - 1) {
+                        self.render(", ", .{});
+                    }
+                }
+                self.render("}});\n    }}\n", .{});
             },
             else => unreachable,
         }
+    }
+
+    fn renderFieldOrParamName(self: *@This(), name: []const u8) void {
+        // Change the name of fields that conflict with zig keywords
+        var result = name;
+        if (mem.eql(u8, result, "error")) {
+            result = "@\"error\"";
+        } else if (mem.eql(u8, result, "type")) {
+            result = "@\"type\"";
+        }
+        self.render("{s}", .{result});
     }
 
     fn renderFieldDecls(self: *@This(), fields: []const *Type.Named.Field) void {
         for (fields) |f| {
             const n = f.asNamed();
 
-            // Change the name of fields that conflict with zig keywords
-            var name = n.name;
-            if (mem.eql(u8, name, "error")) {
-                name = "@\"error\"";
-            } else if (mem.eql(u8, name, "type")) {
-                name = "@\"type\"";
-            }
-
-            self.render("    {s}: ", .{name});
+            self.render("    ", .{});
+            self.renderFieldOrParamName(n.name);
+            self.render(": ", .{});
             self.renderTypeAsIdentifier(f.type);
             self.render(",\n", .{});
         }
@@ -1592,6 +1733,8 @@ const Renderer = struct {
         switch (@"type".*) {
             .objc_id => self.render("*anyopaque", .{}),
             .objc_class => self.render("*objc.Class", .{}),
+            .objc_sel => self.render("selTODO", .{}),
+            .instancetype => self.render("*@This", .{}),
             .void => self.render("void", .{}),
             .int => |i| {
                 const num_bits: u32 = @as(u32, i.size) * 8;
@@ -1632,6 +1775,36 @@ const Renderer = struct {
                 self.renderTypeAsIdentifier(f.result);
             },
             .named => |*n| switch (n.tag) {
+                .method => {
+                    var name = n.name;
+
+                    const colon_count = mem.count(u8, name, ":");
+                    if (colon_count > 0) {
+                        var index: usize = 0;
+                        while (index < colon_count) : (index += 1) {
+                            const next_colon = mem.indexOf(u8, name, ":").?;
+                            const current = name[0..next_colon];
+                            if (index > 0) {
+                                // Capitalize the first letter of the word to match zig coding style.
+                                _ = self.writer.writeByte(std.ascii.toUpper(current[0])) catch {
+                                    unreachable;
+                                };
+                                _ = self.writer.write(current[1..]) catch {
+                                    unreachable;
+                                };
+                            } else {
+                                _ = self.writer.write(current) catch {
+                                    unreachable;
+                                };
+                            }
+                            name = name[next_colon + 1 ..];
+                        }
+                    } else {
+                        _ = self.writer.write(name) catch {
+                            unreachable;
+                        };
+                    }
+                },
                 else => {
                     self.renderNamedName(n);
                 },
@@ -1696,6 +1869,22 @@ fn renderFramework(args: struct {
     // Render the typedefs
     {
         var iter = self.registry.typedefs.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
+    }
+    // Render the protocols
+    {
+        var iter = self.registry.protocols.iterator();
+        while (iter.next()) |e| {
+            const ref = e.value_ptr;
+            self.renderFrameworkDecl(ref.*);
+        }
+    }
+    // Render the interfaces
+    {
+        var iter = self.registry.interfaces.iterator();
         while (iter.next()) |e| {
             const ref = e.value_ptr;
             self.renderFrameworkDecl(ref.*);
