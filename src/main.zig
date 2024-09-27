@@ -1760,7 +1760,25 @@ const Renderer = struct {
                 }
                 self.render("}});\n    }}\n", .{});
             },
-            .type_reference, .class, .function => {},
+            .function => |f| {
+                self.render("pub extern \"{s}\" fn ", .{named.origin.framework});
+                self.renderNamedName(named);
+                self.render("(", .{});
+                for (f.params.items, 0..) |param, index| {
+                    self.renderFieldOrParamName(param.asNamed().name);
+                    self.render(": ", .{});
+                    self.renderTypeAsIdentifier(param.type);
+                    if (f.params.items.len > 3 or index < f.params.items.len - 1) {
+                        self.render(", ", .{});
+                    }
+                }
+                self.render(") callconv(.C) ", .{});
+                self.renderTypeAsIdentifier(f.result.?);
+                self.render(";\n\n", .{});
+            },
+            .type_reference,
+            .class,
+            => {},
             else => unreachable,
         }
     }
@@ -1842,31 +1860,39 @@ const Renderer = struct {
                 .method => {
                     var name = n.name;
 
-                    const colon_count = mem.count(u8, name, ":");
-                    if (colon_count > 0) {
-                        var index: usize = 0;
-                        while (index < colon_count) : (index += 1) {
-                            const next_colon = mem.indexOf(u8, name, ":").?;
-                            const current = name[0..next_colon];
-                            if (index > 0) {
-                                // Capitalize the first letter of the word to match zig coding style.
-                                _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
-                                    unreachable;
-                                };
-                                _ = self.writer.write(current[1..]) catch {
-                                    unreachable;
-                                };
-                            } else {
-                                _ = self.writer.write(current) catch {
-                                    unreachable;
-                                };
-                            }
-                            name = name[next_colon + 1 ..];
-                        }
+                    if (mem.eql(u8, name, "error")) {
+                        self.render("@\"error\"", .{});
+                    } else if (mem.eql(u8, name, "type")) {
+                        self.render("@\"type\"", .{});
+                    } else if (mem.eql(u8, name, "align")) {
+                        self.render("@\"align\"", .{});
                     } else {
-                        _ = self.writer.write(name) catch {
-                            unreachable;
-                        };
+                        const colon_count = mem.count(u8, name, ":");
+                        if (colon_count > 0) {
+                            var index: usize = 0;
+                            while (index < colon_count) : (index += 1) {
+                                const next_colon = mem.indexOf(u8, name, ":").?;
+                                const current = name[0..next_colon];
+                                if (index > 0) {
+                                    // Capitalize the first letter of the word to match zig coding style.
+                                    _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
+                                        unreachable;
+                                    };
+                                    _ = self.writer.write(current[1..]) catch {
+                                        unreachable;
+                                    };
+                                } else {
+                                    _ = self.writer.write(current) catch {
+                                        unreachable;
+                                    };
+                                }
+                                name = name[next_colon + 1 ..];
+                            }
+                        } else {
+                            _ = self.writer.write(name) catch {
+                                unreachable;
+                            };
+                        }
                     }
                 },
                 else => {
