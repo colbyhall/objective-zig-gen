@@ -2,6 +2,7 @@ const std = @import("std");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 const fmt = std.fmt;
+const ascii = std.ascii;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
 
@@ -1568,14 +1569,34 @@ const Renderer = struct {
 
                     for (s.values.items) |v| {
                         var name = v.name;
+                        var last = name;
 
-                        // Remove the prefix from enum entries
-                        if (self.registry.owner.remove_prefix.len > 0) {
-                            if (mem.startsWith(u8, name, self.registry.owner.remove_prefix)) {
-                                name = name[self.registry.owner.remove_prefix.len..];
+                        // Remove the enum type prefix from the entires. This assumes the enumerations are in
+                        // PascalCase. By assuming the case we can remove words instead of raw characters.
+                        //
+                        // NOTE: This has issues with the anon enums and any enumerations that arent in PascalCase
+                        var index: u32 = 0;
+                        while (index < named.name.len and name.len > 0) : (index += 1) {
+                            const a = name[0];
+                            const b = named.name[index];
+
+                            if (a != b) {
+                                if (ascii.isUpper(a)) {
+                                    last = name;
+                                }
+                                break;
+                            }
+                            if (ascii.isUpper(b)) {
+                                last = name;
+                            }
+                            name = name[1..];
+
+                            if (index == named.name.len - 1) {
+                                last = name;
                             }
                         }
-                        self.render("    {s} = {},\n", .{ name, v.value });
+
+                        self.render("    {s} = {},\n", .{ last, v.value });
                     }
                 }
 
