@@ -64,7 +64,7 @@
     },
     {
         "name": "CoreServices",
-        "output_file": "cs",
+        "output_file": "core_services",
         "dependencies": [
             "CoreFoundation",
             "DiskArbitration",
