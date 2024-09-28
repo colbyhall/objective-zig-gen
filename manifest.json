@@ -1,38 +1,183 @@
 [
     {
+        "name": "OpenGL",
+        "output_file": "opengl",
+        "remove_prefix": "CGL"
+    },
+    {
         "name": "CoreFoundation",
-        "output_file": "cf",
-
+        "output_file": "core_foundation",
         "remove_prefix": "CF"
     },
     {
+        "name": "IOKit",
+        "output_file": "io_kit",
+        "remove_prefix": "IO",
+        "dependencies": [ "CoreFoundation" ],
+        "header_override": "IOKitLib.h"
+    },
+    {
+        "name": "Security",
+        "output_file": "security",
+        "remove_prefix": "Sec",
+        "dependencies": [ "CoreFoundation" ]
+    },
+    {
+        "name": "IOSurface",
+        "output_file": "io_surface",
+        "remove_prefix": "IOSurface",
+        "dependencies": [ "CoreFoundation" ]
+    },
+    {
+        "name": "CoreGraphics",
+        "output_file": "core_graphics",
+        "remove_prefix": "CG",
+        "dependencies": [
+            "CoreFoundation",
+            "IOKit"
+        ]
+    },
+    {
+        "name": "CloudKit",
+        "output_file": "cloud_kit",
+        "remove_prefix": "CK",
+        "dependencies": [ "Foundation" ]
+    },
+    {
         "name": "Foundation",
-        "output_file": "ns",
-
+        "output_file": "foundation",
         "remove_prefix": "NS",
         "dependencies": [
-            "CoreFoundation"
+            "CoreFoundation",
+            "Security",
+            "CoreServices"
+        ]
+    },
+    {
+        "name": "CoreText",
+        "output_file": "core_text",
+        "remove_prefix": "CT",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreGraphics"
+        ]
+    },
+    {
+        "name": "CoreServices",
+        "output_file": "cs",
+        "dependencies": [
+            "CoreFoundation",
+            "DiskArbitration",
+            "Security"
+        ]
+    },
+    {
+        "name": "ApplicationServices",
+        "output_file": "application_services",
+        "remove_prefix": "ATS",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreText",
+            "CoreGraphics",
+            "CoreServices",
+            "Foundation"
+        ]
+    },
+    {
+        "name": "DiskArbitration",
+        "output_file": "disk_arbitration",
+        "remove_prefix": "DA",
+        "dependencies": [
+            "CoreFoundation",
+            "IOKit"
         ]
     },
     {
         "name": "AppKit",
         "output_file": "app_kit",
-
         "remove_prefix": "NS",
         "dependencies": [
             "CoreFoundation",
-            "Foundation"
+            "Foundation",
+            "CoreGraphics",
+            "ApplicationServices",
+            "CoreText",
+            "CoreImage",
+            "OpenGL",
+            "CoreVideo",
+            "QuartzCore",
+            "CoreData"
+        ]
+    },
+    {
+        "name": "QuartzCore",
+        "output_file": "quartz_core",
+        "remove_prefix": "CA",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreGraphics",
+            "CoreImage",
+            "Foundation",
+            "Metal",
+            "OpenGL",
+            "CoreVideo"
         ]
     },
     {
         "name": "Metal",
         "output_file": "metal",
-
         "remove_prefix": "MTL",
         "dependencies": [
             "CoreFoundation",
-            "Foundation"
+            "Foundation",
+            "IOSurface"
+        ]
+    },
+    {
+        "name": "ImageIO",
+        "output_file": "image_io",
+        "remove_prefix": "CGImage",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreGraphics"
+        ]
+    },
+    {
+        "name": "CoreImage",
+        "output_file": "core_image",
+        "remove_prefix": "CI",
+        "dependencies": [
+            "CoreFoundation",
+            "Foundation",
+            "CoreGraphics",
+            "ImageIO",
+            "CoreVideo",
+            "IOSurface",
+            "ApplicationServices",
+            "OpenGL",
+            "Metal"
+        ]
+    },
+    {
+        "name": "CoreVideo",
+        "output_file": "core_video",
+        "remove_prefix": "CV",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreGraphics",
+            "OpenGL",
+            "IOSurface",
+            "Metal"
+        ]
+    },
+    {
+        "name": "CoreData",
+        "output_file": "core_data",
+        "remove_prefix": "NS",
+        "dependencies": [
+            "CoreFoundation",
+            "Foundation",
+            "CloudKit"
         ]
     }
-
 ]
