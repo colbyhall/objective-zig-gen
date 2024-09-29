@@ -270,7 +270,7 @@ pub fn main() !void {
                 .argv = &.{
                     "zig",
                     "fmt",
-                    "output_path",
+                    output_path,
                 },
             });
         },
@@ -419,6 +419,7 @@ const Type = union(enum) {
             interface: Interface,
             class: Class,
             type_reference: TypeReference,
+            type_param,
         };
 
         const Origin = union(enum) {
@@ -881,8 +882,26 @@ const Builder = struct {
             c.CXType_ObjCId => {
                 result.* = .{ .objc_id = {} };
             },
-            c.CXType_ObjCObject, c.CXType_ObjCTypeParam => {
+            c.CXType_ObjCObject => {
                 result.* = .{ .void = {} };
+            },
+            c.CXType_ObjCTypeParam => {
+                const name_spelling = c.clang_getTypeSpelling(@"type");
+                const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
+                if (mem.containsAtLeast(u8, name, 1, "<")) {
+                    result.* = .{ .objc_id = {} };
+                } else {
+                    result.* = .{
+                        .named = .{
+                            .name = name,
+                            .origin = origin,
+                            .cursor = c.clang_getNullCursor(),
+                            .tag = .{
+                                .type_param = {},
+                            },
+                        },
+                    };
+                }
             },
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
@@ -1729,9 +1748,26 @@ const Renderer = struct {
             },
             .interface => |i| {
                 self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
-                self.render("pub const ", .{});
-                self.renderNamedName(named);
-                self.render(" = opaque {{", .{});
+
+                const is_generic = i.type_parameters.items.len > 0;
+                if (is_generic) {
+                    self.render("pub fn ", .{});
+                    self.renderNamedName(named);
+                    self.render("(", .{});
+                    for (i.type_parameters.items, 0..) |p, index| {
+                        self.render("comptime ", .{});
+                        self.renderNameAvoidKeywords(p);
+                        self.render(": type", .{});
+                        if (index < i.type_parameters.items.len - 1) {
+                            self.render(", ", .{});
+                        }
+                    }
+                    self.render(") type {{\nreturn struct {{", .{});
+                } else {
+                    self.render("pub const ", .{});
+                    self.renderNamedName(named);
+                    self.render(" = opaque {{", .{});
+                }
                 self.render("\n", .{});
 
                 self.render(
@@ -1768,7 +1804,11 @@ const Renderer = struct {
                     }
                 }
 
-                self.render("}};\n\n", .{});
+                self.render("}};\n", .{});
+                if (is_generic) {
+                    self.render("}}\n", .{});
+                }
+                self.render("\n", .{});
             },
             .method => |m| {
                 self.render("    pub fn ", .{});
