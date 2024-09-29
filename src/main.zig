@@ -1502,6 +1502,8 @@ const Renderer = struct {
         .{ "resume", "@\"resume\"" },
         .{ "suspend", "@\"suspend\"" },
         .{ "type", "@\"type\"" },
+        .{ "test", "@\"test\"" },
+        .{ "opaque", "@\"opaque\"" },
     });
 
     fn init(
@@ -1679,9 +1681,8 @@ const Renderer = struct {
                 // Skip C types that have typedefs to add them to the C global namespace.
                 switch (t.child.?.*) {
                     .named => |n| {
-                        switch (n.tag) {
-                            .@"struct", .@"union", .@"enum" => return,
-                            else => {},
+                        if (mem.eql(u8, n.name, named.name)) {
+                            return;
                         }
                     },
                     else => {},
@@ -1777,7 +1778,7 @@ const Renderer = struct {
                 if (m.params.items.len > 0) {
                     self.render(", ", .{});
                     for (m.params.items, 0..) |param, index| {
-                        self.renderNameAvoidKeywords(param.asNamed().name);
+                        self.render("_{s}", .{param.asNamed().name});
                         self.render(": ", .{});
                         self.renderTypeAsIdentifier(param.type);
                         if (m.params.items.len > 3 or index < m.params.items.len - 1) {
@@ -1796,7 +1797,7 @@ const Renderer = struct {
                 self.renderTypeAsIdentifier(m.result.?);
                 self.render(", .{{", .{});
                 for (m.params.items, 0..) |param, index| {
-                    self.renderNameAvoidKeywords(param.asNamed().name);
+                    self.render("_{s}", .{param.asNamed().name});
                     if (m.params.items.len > 3 or index < m.params.items.len - 1) {
                         self.render(", ", .{});
                     }
@@ -1805,7 +1806,48 @@ const Renderer = struct {
             },
             .function => |f| {
                 self.render("pub extern \"{s}\" fn ", .{named.origin.framework});
-                self.renderNamedName(named);
+                var name = named.name;
+
+                switch (named.origin) {
+                    .framework => |ff| {
+                        if (self.frameworks.get(ff)) |framework| {
+                            if (framework.remove_prefix.len > 0) {
+                                name = name[framework.remove_prefix.len..];
+                            }
+                        }
+                    },
+                    else => {},
+                }
+
+                if (keyword_remap.get(name)) |remap| {
+                    self.render("{s}", .{remap});
+                } else {
+                    var index: u32 = 1;
+                    while (index < name.len) : (index += 1) {
+                        const it = name[index];
+                        if (ascii.isLower(it)) {
+                            index -= 1;
+                            break;
+                        }
+                    }
+                    if (index == 0) {
+                        _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                            unreachable;
+                        };
+                        _ = self.writer.write(name[1..]) catch {
+                            unreachable;
+                        };
+                    } else {
+                        for (0..index) |i| {
+                            _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
+                                unreachable;
+                            };
+                        }
+                        _ = self.writer.write(name[index..]) catch {
+                            unreachable;
+                        };
+                    }
+                }
                 self.render("(", .{});
                 for (f.params.items, 0..) |param, index| {
                     if (param.asNamed().name.len > 0) {
@@ -1911,26 +1953,59 @@ const Renderer = struct {
                             while (index < colon_count) : (index += 1) {
                                 const next_colon = mem.indexOf(u8, name, ":").?;
                                 const current = name[0..next_colon];
-                                if (index > 0 and current.len > 0) {
-                                    // Capitalize the first letter of the word to match zig coding style.
-                                    _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
-                                        unreachable;
-                                    };
-                                    _ = self.writer.write(current[1..]) catch {
-                                        unreachable;
-                                    };
-                                } else {
-                                    _ = self.writer.write(current) catch {
-                                        unreachable;
-                                    };
+                                if (current.len > 0) {
+                                    if (index > 0) {
+                                        // Capitalize the first letter of the word to match zig coding style.
+                                        _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
+                                            unreachable;
+                                        };
+                                        _ = self.writer.write(current[1..]) catch {
+                                            unreachable;
+                                        };
+                                    } else {
+                                        _ = self.writer.writeByte(ascii.toLower(current[0])) catch {
+                                            unreachable;
+                                        };
+                                        _ = self.writer.write(current[1..]) catch {
+                                            unreachable;
+                                        };
+                                    }
                                 }
                                 name = name[next_colon + 1 ..];
                             }
                         } else {
-                            _ = self.writer.write(name) catch {
+                            _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                                unreachable;
+                            };
+                            _ = self.writer.write(name[1..]) catch {
                                 unreachable;
                             };
                         }
+                    }
+                },
+                .function => {
+                    var name = n.name;
+
+                    switch (n.origin) {
+                        .framework => |f| {
+                            if (self.frameworks.get(f)) |framework| {
+                                if (framework.remove_prefix.len > 0) {
+                                    name = name[framework.remove_prefix.len..];
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+
+                    if (keyword_remap.get(name)) |remap| {
+                        self.render("{s}", .{remap});
+                    } else {
+                        _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                            unreachable;
+                        };
+                        _ = self.writer.write(name[1..]) catch {
+                            unreachable;
+                        };
                     }
                 },
                 else => {
