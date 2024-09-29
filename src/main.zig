@@ -622,18 +622,21 @@ const Builder = struct {
 
     stack: std.ArrayList(*Type.Named),
     registry: Registry,
+    node: Progress.Node,
 
-    fn init(owner: *const Framework, gpa: Allocator, arena: Allocator) @This() {
+    fn init(owner: *const Framework, gpa: Allocator, arena: Allocator, node: Progress.Node) @This() {
         return .{
             .gpa = gpa,
             .arena = arena,
 
             .stack = std.ArrayList(*Type.Named).init(gpa),
             .registry = Registry.init(owner, gpa),
+            .node = node,
         };
     }
 
     fn allocType(self: *@This()) *Type {
+        self.node.completeOne();
         return self.arena.create(Type) catch {
             @panic("OOM");
         };
@@ -1007,7 +1010,7 @@ fn parseFramework(
     }
 
     const cursor = c.clang_getTranslationUnitCursor(unit);
-    var builder = Builder.init(args.framework, args.gpa, args.arena);
+    var builder = Builder.init(args.framework, args.gpa, args.arena, progress);
     // Add this type because it was missing for some reason.
     {
         const _u128_t = builder.allocType();
@@ -2088,6 +2091,7 @@ fn renderFramework(args: struct {
 }) void {
     const progress = args.progress.start(args.registry.owner.name, 0);
     defer progress.end();
+
     const path = fmt.allocPrint(args.gpa, "{s}.zig", .{args.registry.owner.output_file}) catch {
         @panic("OOM");
     };
@@ -2107,8 +2111,10 @@ fn renderFramework(args: struct {
     }
     self.render("\n", .{});
 
+    progress.setEstimatedTotalItems(self.registry.order.items.len);
     for (self.registry.order.items) |o| {
         const ref = self.registry.lookup(o.tag, o.name);
         self.renderFrameworkDecl(ref.?);
+        progress.completeOne();
     }
 }
