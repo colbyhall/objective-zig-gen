@@ -219,6 +219,31 @@ pub fn main() !void {
             thread_pool.waitAndWork(&parse_framework_work);
             parse_progress.end();
 
+            for (results) |*a| {
+                for (results) |*b| {
+                    if (a == b) {
+                        continue;
+                    }
+
+                    {
+                        var iter = b.interfaces.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.interfaces.contains(it.key_ptr.*)) {
+                                try a.interfaces.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+                    {
+                        var iter = b.protocols.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.protocols.contains(it.key_ptr.*)) {
+                                try a.protocols.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+                }
+            }
+
             const cwd = std.fs.cwd();
 
             const output_path = "output";
@@ -1690,7 +1715,7 @@ const Renderer = struct {
                     }
 
                     var result = named.name;
-                    if (framework.remove_prefix.len > 0) {
+                    if (framework.remove_prefix.len > 0 and !mem.eql(u8, named.name, framework.remove_prefix)) {
                         if (mem.startsWith(u8, named.name, framework.remove_prefix)) {
                             result = result[framework.remove_prefix.len..];
                         }
@@ -1819,8 +1844,12 @@ const Renderer = struct {
                 if (s.values.items.len > 0) {
                     self.render("\n", .{});
 
+                    var values = std.StringHashMap(i64).init(self.gpa);
                     for (s.values.items) |v| {
                         var name = v.name;
+                        if (name.len > 0 and name[0] == 'k') {
+                            name = name[1..];
+                        }
                         var last = name;
 
                         // Remove the enum type prefix from the entires. This assumes the enumerations are in
@@ -1848,10 +1877,16 @@ const Renderer = struct {
                             }
                         }
 
-                        if (ascii.isDigit(last[0])) {
-                            self.render("_", .{});
+                        if (!values.contains(last)) {
+                            values.put(last, v.value) catch {
+                                @panic("OOM");
+                            };
+
+                            if (ascii.isDigit(last[0])) {
+                                self.render("_", .{});
+                            }
+                            self.render("{s} = {},\n", .{ last, v.value });
                         }
-                        self.render("{s} = {},\n", .{ last, v.value });
                     }
                 }
 
