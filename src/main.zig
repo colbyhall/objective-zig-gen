@@ -569,6 +569,8 @@ const Registry = struct {
         } else if (mem.indexOf(u8, lookup_name, "union ")) |index| {
             lookup_name = lookup_name[index + 6 ..];
             preference = .@"union";
+        } else if (mem.indexOf(u8, lookup_name, "const ")) |index| {
+            lookup_name = lookup_name[index + 6 ..];
         }
 
         switch (preference) {
@@ -588,10 +590,10 @@ const Registry = struct {
                 if (self.protocols.get(lookup_name)) |u| {
                     return u;
                 }
-                if (self.classes.get(lookup_name)) |u| {
+                if (self.interfaces.get(lookup_name)) |u| {
                     return u;
                 }
-                if (self.interfaces.get(lookup_name)) |u| {
+                if (self.classes.get(lookup_name)) |u| {
                     return u;
                 }
             },
@@ -1366,20 +1368,26 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_ObjCClassRef => {
             const class = builder.allocType();
-            class.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .class = .{
-                            .protocol = null,
+            if (mem.eql(u8, name, "Protocol")) {
+                class.* = .{
+                    .base_protocol = {},
+                };
+            } else {
+                class.* = .{
+                    .named = .{
+                        .name = builder.allocName(name),
+                        .cursor = cursor,
+                        .origin = origin,
+                        .tag = .{
+                            .class = .{
+                                .protocol = null,
+                            },
                         },
                     },
-                },
-            };
-            builder.registry.insert(&class.named);
-            builder.push(&class.named);
+                };
+                builder.registry.insert(&class.named);
+                builder.push(&class.named);
+            }
 
             return c.CXChildVisit_Recurse;
         },
@@ -1412,14 +1420,20 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     super = s;
                 } else {
                     const ref = builder.allocType();
-                    ref.* = .{
-                        .named = .{
-                            .name = builder.allocName(name),
-                            .cursor = cursor,
-                            .origin = origin,
-                            .tag = .{ .class = .{ .protocol = null } },
-                        },
-                    };
+                    if (mem.eql(u8, name, "Protocol")) {
+                        ref.* = .{
+                            .base_protocol = {},
+                        };
+                    } else {
+                        ref.* = .{
+                            .named = .{
+                                .name = builder.allocName(name),
+                                .cursor = cursor,
+                                .origin = origin,
+                                .tag = .{ .class = .{ .protocol = null } },
+                            },
+                        };
+                    }
                     super = &ref.named;
                 }
                 switch (parent.tag) {
@@ -1540,6 +1554,7 @@ const Renderer = struct {
         .{ "type", "@\"type\"" },
         .{ "test", "@\"test\"" },
         .{ "opaque", "@\"opaque\"" },
+        .{ "null", "@\"null\"" },
     });
 
     fn init(
@@ -1833,7 +1848,10 @@ const Renderer = struct {
                             }
                         }
 
-                        self.render("    {s} = {},\n", .{ last, v.value });
+                        if (ascii.isDigit(last[0])) {
+                            self.render("_", .{});
+                        }
+                        self.render("{s} = {},\n", .{ last, v.value });
                     }
                 }
 
@@ -1879,9 +1897,12 @@ const Renderer = struct {
                     .{},
                 );
 
-                for (p.inherits.items) |n| {
+                for (p.inherits.items, 0..) |n, index| {
                     self.renderNamedName(n);
-                    self.render(", ", .{});
+
+                    if (index < p.inherits.items.len - 1) {
+                        self.render(", ", .{});
+                    }
                 }
                 self.render("}});\n", .{});
 
@@ -1923,7 +1944,13 @@ const Renderer = struct {
                             self.render(", ", .{});
                         }
                     }
-                    self.render(") type {{\nreturn struct {{", .{});
+                    self.render(") type {{\n", .{});
+                    for (i.type_parameters.items, 0..) |p, index| {
+                        self.render("const unused{} = ", .{index});
+                        self.renderNameAvoidKeywords(p);
+                        self.render(";\n_ = unused{}; // Prevent unused parameter warning!!!\n", .{index});
+                    }
+                    self.render("return struct {{", .{});
                 } else {
                     self.render("pub const ", .{});
                     self.renderNamedName(named);
@@ -1941,9 +1968,12 @@ const Renderer = struct {
                     self.render("objc.NSObject", .{});
                 }
                 self.render(", &.{{", .{});
-                for (i.protocols.items) |inh| {
+                for (i.protocols.items, 0..) |inh, index| {
                     self.renderTypeAsIdentifier(inh.asType());
-                    self.render(", ", .{});
+
+                    if (index < i.protocols.items.len - 1) {
+                        self.render(", ", .{});
+                    }
                 }
 
                 self.render("}});\n", .{});
@@ -2116,6 +2146,7 @@ const Renderer = struct {
             .objc_id => self.render("*objc.Id", .{}),
             .objc_class => self.render("*objc.Class", .{}),
             .objc_sel => self.render("*objc.SEL", .{}),
+            .base_protocol => self.render("*objc.Protocol", .{}),
             .instancetype => self.render("*@This()", .{}),
             .void => self.render("void", .{}),
             .int => |i| {
@@ -2179,8 +2210,21 @@ const Renderer = struct {
 
                     self.renderFunctionName(n.name);
                 },
-                .type_reference => {
-                    self.renderTypeAsIdentifier(self.registry.lookupElaborated(n.name).?.asType());
+                .type_reference, .class => {
+                    if (self.registry.lookupElaborated(n.name)) |e| {
+                        switch (e.tag) {
+                            .type_reference, .class => {
+                                std.log.err("Found TypeReference or Class pointing to class or type reference. Parent: {s}, Child: {s}. Framework {s}", .{ n.name, e.name, self.registry.owner.name });
+                                self.render("anyopaque", .{});
+                            },
+                            else => {
+                                self.renderTypeAsIdentifier(e.asType());
+                            },
+                        }
+                    } else {
+                        std.log.err("Failed to find {s} in framework {s}.", .{ n.name, self.registry.owner.name });
+                        unreachable;
+                    }
                 },
                 else => {
                     self.renderNamedName(n);

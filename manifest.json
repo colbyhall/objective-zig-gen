@@ -41,7 +41,10 @@
         "name": "CloudKit",
         "output_file": "cloud_kit",
         "remove_prefix": "CK",
-        "dependencies": [ "Foundation" ]
+        "dependencies": [ 
+            "Foundation",
+            "CoreLocation"
+        ]
     },
     {
         "name": "Foundation",
@@ -178,6 +181,14 @@
             "CoreFoundation",
             "Foundation",
             "CloudKit"
+        ]
+    },
+    {
+        "name": "CoreLocation",
+        "output_file": "core_location",
+        "remove_prefix": "CL",
+        "dependencies": [
+            "Foundation"
         ]
     }
 ]
