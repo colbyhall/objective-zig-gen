@@ -1854,7 +1854,24 @@ const Renderer = struct {
                 self.render("}});\n    }}\n", .{});
             },
             .function => |f| {
-                self.render("pub extern \"{s}\" fn ", .{named.origin.framework});
+                self.render("extern \"{s}\" fn {s}(", .{ named.origin.framework, named.name });
+
+                for (f.params.items, 0..) |param, index| {
+                    if (param.asNamed().name.len > 0) {
+                        self.renderNameAvoidKeywords(param.asNamed().name);
+                        self.render(": ", .{});
+                    }
+
+                    self.renderTypeAsIdentifier(param.type);
+                    if (f.params.items.len > 3 or index < f.params.items.len - 1) {
+                        self.render(", ", .{});
+                    }
+                }
+                self.render(") callconv(.C) ", .{});
+                self.renderTypeAsIdentifier(f.result.?);
+                self.render(";\n", .{});
+
+                self.render("pub const ", .{});
                 var name = named.name;
 
                 switch (named.origin) {
@@ -1897,21 +1914,8 @@ const Renderer = struct {
                         };
                     }
                 }
-                self.render("(", .{});
-                for (f.params.items, 0..) |param, index| {
-                    if (param.asNamed().name.len > 0) {
-                        self.renderNameAvoidKeywords(param.asNamed().name);
-                        self.render(": ", .{});
-                    }
 
-                    self.renderTypeAsIdentifier(param.type);
-                    if (f.params.items.len > 3 or index < f.params.items.len - 1) {
-                        self.render(", ", .{});
-                    }
-                }
-                self.render(") callconv(.C) ", .{});
-                self.renderTypeAsIdentifier(f.result.?);
-                self.render(";\n\n", .{});
+                self.render(" = {s};\n\n", .{named.name});
             },
             .type_reference,
             .class,
