@@ -1735,7 +1735,7 @@ const Renderer = struct {
                 self.render("\n", .{});
 
                 self.render(
-                    "    pub const InternalInfo = objc.ExternalClass(\"{s}\", @This(), ",
+                    "    pub const InternalInfo = objc.ExternClass(\"{s}\", @This(), ",
                     .{named.name},
                 );
                 if (i.super) |super| {
