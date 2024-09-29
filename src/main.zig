@@ -384,7 +384,7 @@ const Type = union(enum) {
             type_parameters: std.ArrayList([]const u8),
 
             super: ?*Named,
-            protocols: std.ArrayList(*Protocol),
+            protocols: std.ArrayList(*Named),
             methods: std.ArrayList(*Method),
 
             fn asNamed(self: *@This()) *Type.Named {
@@ -1394,7 +1394,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         .interface = .{
                             .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
                             .super = null,
-                            .protocols = std.ArrayList(*Type.Named.Protocol).init(builder.gpa),
+                            .protocols = std.ArrayList(*Type.Named).init(builder.gpa),
                             .methods = std.ArrayList(*Type.Named.Method).init(builder.gpa),
                         },
                     },
@@ -1407,28 +1407,32 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         },
         c.CXCursor_ObjCProtocolRef => {
             if (builder.parent()) |parent| {
+                var super: *Type.Named = undefined;
+                if (builder.registry.protocols.get(name)) |s| {
+                    super = s;
+                } else {
+                    const ref = builder.allocType();
+                    ref.* = .{
+                        .named = .{
+                            .name = builder.allocName(name),
+                            .cursor = cursor,
+                            .origin = origin,
+                            .tag = .{ .class = .{ .protocol = null } },
+                        },
+                    };
+                    super = &ref.named;
+                }
                 switch (parent.tag) {
                     .protocol => |*i| {
-                        var super: *Type.Named = undefined;
-                        if (builder.registry.protocols.get(name)) |s| {
-                            super = s;
-                        } else {
-                            const ref = builder.allocType();
-                            ref.* = .{
-                                .named = .{
-                                    .name = builder.allocName(name),
-                                    .cursor = cursor,
-                                    .origin = origin,
-                                    .tag = .{ .class = .{ .protocol = null } },
-                                },
-                            };
-                            super = &ref.named;
-                        }
                         i.inherits.append(super) catch {
                             @panic("OOM");
                         };
                     },
-                    .interface => {},
+                    .interface => |*i| {
+                        i.protocols.append(super) catch {
+                            @panic("OOM");
+                        };
+                    },
                     else => {},
                 }
             }
@@ -1526,6 +1530,7 @@ const Renderer = struct {
     writer: std.fs.File.Writer,
     frameworks: *const std.StringHashMap(*const Framework),
     registry: *Registry,
+    gpa: Allocator,
 
     const keyword_remap = std.StaticStringMap([]const u8).initComptime(.{
         .{ "error", "@\"error\"" },
@@ -1541,11 +1546,13 @@ const Renderer = struct {
         writer: std.fs.File.Writer,
         frameworks: *const std.StringHashMap(*const Framework),
         registry: *Registry,
+        gpa: Allocator,
     ) @This() {
         return .{
             .writer = writer,
             .frameworks = frameworks,
             .registry = registry,
+            .gpa = gpa,
         };
     }
 
@@ -1561,6 +1568,66 @@ const Renderer = struct {
                 self.renderNamedDecl(named);
             },
             else => {},
+        }
+    }
+
+    fn renderCamelCase(self: *@This(), name: []const u8) void {
+        var index: u32 = 1;
+        while (index < name.len) : (index += 1) {
+            const it = name[index];
+            if (ascii.isLower(it)) {
+                index -= 1;
+                break;
+            }
+        }
+        if (index == 0) {
+            _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                unreachable;
+            };
+            _ = self.writer.write(name[1..]) catch {
+                unreachable;
+            };
+        } else {
+            for (0..index) |i| {
+                _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
+                    unreachable;
+                };
+            }
+            _ = self.writer.write(name[index..]) catch {
+                unreachable;
+            };
+        }
+    }
+
+    fn renderFunctionName(self: *@This(), in_name: []const u8) void {
+        var name = in_name;
+        if (keyword_remap.get(name)) |remap| {
+            self.render("{s}", .{remap});
+        } else {
+            const colon_count = mem.count(u8, name, ":");
+            if (colon_count > 0) {
+                var colon: usize = 0;
+                while (colon < colon_count) : (colon += 1) {
+                    const next_colon = mem.indexOf(u8, name, ":").?;
+                    const current = name[0..next_colon];
+                    if (current.len > 0) {
+                        if (colon > 0) {
+                            // Capitalize the first letter of the word to match zig coding style.
+                            _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
+                                unreachable;
+                            };
+                            _ = self.writer.write(current[1..]) catch {
+                                unreachable;
+                            };
+                        } else {
+                            self.renderCamelCase(current);
+                        }
+                    }
+                    name = name[next_colon + 1 ..];
+                }
+            } else {
+                self.renderCamelCase(name);
+            }
         }
     }
 
@@ -1629,6 +1696,82 @@ const Renderer = struct {
                     );
                     unreachable;
                 }
+            },
+        }
+    }
+
+    fn renderMethods(self: *@This(), methods_rendered: *std.StringHashMap(void), named: *Type.Named) void {
+        switch (named.tag) {
+            .protocol => |p| {
+                for (p.inherits.items) |super| {
+                    var s = super;
+                    switch (super.tag) {
+                        .class => {
+                            s = self.registry.lookup(.protocol, super.name).?;
+                        },
+                        .protocol => {},
+                        else => {
+                            unreachable;
+                        },
+                    }
+
+                    self.renderMethods(methods_rendered, s);
+                }
+
+                for (p.methods.items) |m| {
+                    if (!methods_rendered.contains(m.asNamed().name)) {
+                        methods_rendered.put(m.asNamed().name, {}) catch {
+                            @panic("OOM");
+                        };
+
+                        self.renderNamedDecl(m.asNamed());
+                        self.render("\n", .{});
+                    }
+                }
+            },
+            .interface => |i| {
+                if (i.super) |super| {
+                    var s = super;
+                    switch (super.tag) {
+                        .class, .type_reference => {
+                            s = self.registry.lookup(.interface, super.name).?;
+                        },
+                        .interface => {},
+                        else => {
+                            unreachable;
+                        },
+                    }
+
+                    self.renderMethods(methods_rendered, s);
+                }
+
+                for (i.protocols.items) |super| {
+                    var s = super;
+                    switch (super.tag) {
+                        .class => {
+                            s = self.registry.lookup(.protocol, super.name).?;
+                        },
+                        .protocol => {},
+                        else => {
+                            unreachable;
+                        },
+                    }
+
+                    self.renderMethods(methods_rendered, s);
+                }
+
+                for (i.methods.items) |m| {
+                    if (!methods_rendered.contains(m.asNamed().name)) {
+                        methods_rendered.put(m.asNamed().name, {}) catch {
+                            @panic("OOM");
+                        };
+                        self.renderNamedDecl(m.asNamed());
+                        self.render("\n", .{});
+                    }
+                }
+            },
+            else => {
+                unreachable;
             },
         }
     }
@@ -1747,14 +1890,20 @@ const Renderer = struct {
                 self.render("    pub const release = InternalInfo.release;\n", .{});
                 self.render("    pub const autorelease = InternalInfo.autorelease;\n", .{});
 
-                if (p.methods.items.len > 0) {
-                    self.render("\n", .{});
+                self.render("\n", .{});
 
-                    for (p.methods.items) |m| {
-                        self.renderNamedDecl(m.asNamed());
-                        self.render("\n", .{});
-                    }
-                }
+                var methods_rendered = std.StringHashMap(void).init(self.gpa);
+                methods_rendered.put("retain", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("release", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("autorelease", {}) catch {
+                    @panic("OOM");
+                };
+
+                self.renderMethods(&methods_rendered, named);
 
                 self.render("}};\n\n", .{});
             },
@@ -1787,13 +1936,13 @@ const Renderer = struct {
                     .{named.name},
                 );
                 if (i.super) |super| {
-                    self.renderNamedName(super);
+                    self.renderTypeAsIdentifier(super.asType());
                 } else {
                     self.render("objc.NSObject", .{});
                 }
                 self.render(", &.{{", .{});
                 for (i.protocols.items) |inh| {
-                    self.renderTypeAsIdentifier(inh.asNamed().asType());
+                    self.renderTypeAsIdentifier(inh.asType());
                     self.render(", ", .{});
                 }
 
@@ -1806,15 +1955,29 @@ const Renderer = struct {
                 self.render("    pub const new = InternalInfo.new;\n", .{});
                 self.render("    pub const alloc = InternalInfo.alloc;\n", .{});
                 self.render("    pub const allocInit = InternalInfo.allocInit;\n", .{});
+                self.render("\n", .{});
 
-                if (i.methods.items.len > 0) {
-                    self.render("\n", .{});
+                var methods_rendered = std.StringHashMap(void).init(self.gpa);
+                methods_rendered.put("retain", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("release", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("autorelease", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("new", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("alloc", {}) catch {
+                    @panic("OOM");
+                };
+                methods_rendered.put("allocInit", {}) catch {
+                    @panic("OOM");
+                };
 
-                    for (i.methods.items) |m| {
-                        self.renderNamedDecl(m.asNamed());
-                        self.render("\n", .{});
-                    }
-                }
+                self.renderMethods(&methods_rendered, named);
 
                 self.render("}};\n", .{});
                 if (is_generic) {
@@ -1825,7 +1988,7 @@ const Renderer = struct {
             .method => |m| {
                 self.render("    pub fn ", .{});
                 self.renderTypeAsIdentifier(named.asType());
-                self.render("(self: *@This()", .{});
+                self.render("(_self: *@This()", .{});
 
                 if (m.params.items.len > 0) {
                     self.render(", ", .{});
@@ -1843,7 +2006,7 @@ const Renderer = struct {
                 self.renderTypeAsIdentifier(m.result.?);
                 self.render(" {{\n", .{});
                 self.render(
-                    "        return objc.msgSend(self, \"{s}\", ",
+                    "        return objc.msgSend(_self, \"{s}\", ",
                     .{named.name},
                 );
                 self.renderTypeAsIdentifier(m.result.?);
@@ -1998,46 +2161,7 @@ const Renderer = struct {
             },
             .named => |*n| switch (n.tag) {
                 .method => {
-                    var name = n.name;
-
-                    if (keyword_remap.get(name)) |remap| {
-                        self.render("{s}", .{remap});
-                    } else {
-                        const colon_count = mem.count(u8, name, ":");
-                        if (colon_count > 0) {
-                            var index: usize = 0;
-                            while (index < colon_count) : (index += 1) {
-                                const next_colon = mem.indexOf(u8, name, ":").?;
-                                const current = name[0..next_colon];
-                                if (current.len > 0) {
-                                    if (index > 0) {
-                                        // Capitalize the first letter of the word to match zig coding style.
-                                        _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
-                                            unreachable;
-                                        };
-                                        _ = self.writer.write(current[1..]) catch {
-                                            unreachable;
-                                        };
-                                    } else {
-                                        _ = self.writer.writeByte(ascii.toLower(current[0])) catch {
-                                            unreachable;
-                                        };
-                                        _ = self.writer.write(current[1..]) catch {
-                                            unreachable;
-                                        };
-                                    }
-                                }
-                                name = name[next_colon + 1 ..];
-                            }
-                        } else {
-                            _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
-                                unreachable;
-                            };
-                            _ = self.writer.write(name[1..]) catch {
-                                unreachable;
-                            };
-                        }
-                    }
+                    self.renderFunctionName(n.name);
                 },
                 .function => {
                     var name = n.name;
@@ -2053,22 +2177,10 @@ const Renderer = struct {
                         else => {},
                     }
 
-                    if (keyword_remap.get(name)) |remap| {
-                        self.render("{s}", .{remap});
-                    } else {
-                        _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
-                            unreachable;
-                        };
-                        _ = self.writer.write(name[1..]) catch {
-                            unreachable;
-                        };
-                    }
+                    self.renderFunctionName(n.name);
                 },
-                .protocol => {
-                    self.render("PROTOCOL", .{});
-                },
-                .interface => {
-                    self.render("INRTERFACE", .{});
+                .type_reference => {
+                    self.renderTypeAsIdentifier(self.registry.lookupElaborated(n.name).?.asType());
                 },
                 else => {
                     self.renderNamedName(n);
@@ -2089,7 +2201,7 @@ fn renderFramework(args: struct {
     registry: *Registry,
     progress: Progress.Node,
 }) void {
-    const progress = args.progress.start(args.registry.owner.name, 0);
+    const progress = args.progress.start(args.registry.owner.name, args.registry.order.items.len);
     defer progress.end();
 
     const path = fmt.allocPrint(args.gpa, "{s}.zig", .{args.registry.owner.output_file}) catch {
@@ -2100,7 +2212,7 @@ fn renderFramework(args: struct {
     };
     defer output_file.close();
 
-    var self = Renderer.init(output_file.writer(), args.frameworks, args.registry);
+    var self = Renderer.init(output_file.writer(), args.frameworks, args.registry, args.gpa);
 
     self.render("// THIS FILE IS AUTOGENERATED. MODIFICATIONS WILL NOT BE MAINTAINED.\n\n", .{});
     self.render("const std = @import(\"std\");\n", .{});
@@ -2111,7 +2223,6 @@ fn renderFramework(args: struct {
     }
     self.render("\n", .{});
 
-    progress.setEstimatedTotalItems(self.registry.order.items.len);
     for (self.registry.order.items) |o| {
         const ref = self.registry.lookup(o.tag, o.name);
         self.renderFrameworkDecl(ref.?);
