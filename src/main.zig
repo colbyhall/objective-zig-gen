@@ -4,6 +4,7 @@ const Allocator = mem.Allocator;
 const fmt = std.fmt;
 const ascii = std.ascii;
 const meta = std.meta;
+const Progress = std.Progress;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
 
@@ -190,14 +191,13 @@ pub fn main() !void {
             );
             defer allocator.free(frameworks_path);
 
-            std.log.info("Parsed manifest and found {} frameworks.", .{manifest.value.len});
-            for (manifest.value, 0..) |framework, index| {
-                std.log.info("  {}. {s}", .{ index + 1, framework.name });
-            }
-
             var thread_pool: std.Thread.Pool = undefined;
             try thread_pool.init(.{ .allocator = allocator });
 
+            const base_progress = Progress.start(.{ .estimated_total_items = 2 });
+            defer base_progress.end();
+
+            const parse_progress = base_progress.start("Parsing Frameworks", manifest.value.len);
             const results = try allocator.alloc(Registry, manifest.value.len);
             var parse_framework_work = std.Thread.WaitGroup{};
             for (manifest.value, 0..) |*framework, index| {
@@ -211,11 +211,13 @@ pub fn main() !void {
                             .sdk_path = sdk_path,
                             .framework = framework,
                             .result = &results[index],
+                            .progress = parse_progress,
                         },
                     },
                 );
             }
             thread_pool.waitAndWork(&parse_framework_work);
+            parse_progress.end();
 
             const cwd = std.fs.cwd();
 
@@ -236,6 +238,7 @@ pub fn main() !void {
                 _ = try objc_file.write(@embedFile("objc.zig"));
             }
 
+            const render_progress = base_progress.start("Rendering Frameworks", manifest.value.len);
             var render_framework_work = std.Thread.WaitGroup{};
             for (results) |*r| {
                 thread_pool.spawnWg(&render_framework_work, renderFramework, .{
@@ -244,10 +247,12 @@ pub fn main() !void {
                         .output = output,
                         .frameworks = &frameworks,
                         .registry = r,
+                        .progress = render_progress,
                     },
                 });
             }
             thread_pool.waitAndWork(&render_framework_work);
+            render_progress.end();
 
             {
                 var root_file = try output.createFile("root.zig", .{});
@@ -952,8 +957,12 @@ fn parseFramework(
         sdk_path: []const u8,
         framework: *const Framework,
         result: *Registry,
+        progress: Progress.Node,
     },
 ) void {
+    const progress = args.progress.start(args.framework.name, 0);
+    defer progress.end();
+
     const path = blk: {
         if (args.framework.header_override) |header| {
             break :blk fmt.allocPrintZ(
@@ -2048,6 +2057,12 @@ const Renderer = struct {
                         };
                     }
                 },
+                .protocol => {
+                    self.render("PROTOCOL", .{});
+                },
+                .interface => {
+                    self.render("INRTERFACE", .{});
+                },
                 else => {
                     self.renderNamedName(n);
                 },
@@ -2065,7 +2080,10 @@ fn renderFramework(args: struct {
     output: std.fs.Dir,
     frameworks: *const std.StringHashMap(*const Framework),
     registry: *Registry,
+    progress: Progress.Node,
 }) void {
+    const progress = args.progress.start(args.registry.owner.name, 0);
+    defer progress.end();
     const path = fmt.allocPrint(args.gpa, "{s}.zig", .{args.registry.owner.output_file}) catch {
         @panic("OOM");
     };
