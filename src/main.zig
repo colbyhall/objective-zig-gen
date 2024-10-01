@@ -1580,6 +1580,7 @@ const Renderer = struct {
         .{ "test", "@\"test\"" },
         .{ "opaque", "@\"opaque\"" },
         .{ "null", "@\"null\"" },
+        .{ "bool", "@\"bool\"" },
     });
 
     fn init(
@@ -1602,16 +1603,20 @@ const Renderer = struct {
         };
     }
 
-    fn renderFrameworkDecl(self: *@This(), named: *Type.Named) void {
+    fn renderFrameworkDecl(self: *@This(), named: *Type.Named) bool {
         switch (named.origin) {
             .framework => |f| if (mem.eql(u8, f, self.registry.owner.name)) {
-                self.renderNamedDecl(named);
+                return self.renderNamedDecl(named);
             },
             else => {},
         }
+        return false;
     }
 
-    fn renderCamelCase(self: *@This(), name: []const u8) void {
+    fn generateCamelCase(self: *@This(), name: []const u8) []const u8 {
+        const result = self.gpa.alloc(u8, name.len) catch {
+            @panic("OOM");
+        };
         var index: u32 = 1;
         while (index < name.len) : (index += 1) {
             const it = name[index];
@@ -1621,52 +1626,51 @@ const Renderer = struct {
             }
         }
         if (index == 0) {
-            _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
-                unreachable;
-            };
-            _ = self.writer.write(name[1..]) catch {
-                unreachable;
-            };
+            result[0] = ascii.toLower(name[0]);
+            mem.copyForwards(u8, result[1..], name[1..]);
         } else {
             for (0..index) |i| {
-                _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
-                    unreachable;
-                };
+                result[i] = ascii.toLower(name[i]);
             }
-            _ = self.writer.write(name[index..]) catch {
-                unreachable;
-            };
+            mem.copyForwards(u8, result[index..], name[index..]);
         }
+        return result;
     }
 
-    fn renderFunctionName(self: *@This(), in_name: []const u8) void {
+    fn generateFunctionName(self: *@This(), in_name: []const u8) []const u8 {
         var name = in_name;
         if (keyword_remap.get(name)) |remap| {
-            self.render("{s}", .{remap});
+            return remap;
         } else {
             const colon_count = mem.count(u8, name, ":");
             if (colon_count > 0) {
-                var colon: usize = 0;
+                var index: usize = 0;
+                const result = self.gpa.alloc(u8, name.len - colon_count) catch {
+                    @panic("OOM");
+                };
+
+                var colon: u32 = 0;
                 while (colon < colon_count) : (colon += 1) {
                     const next_colon = mem.indexOf(u8, name, ":").?;
                     const current = name[0..next_colon];
                     if (current.len > 0) {
                         if (colon > 0) {
                             // Capitalize the first letter of the word to match zig coding style.
-                            _ = self.writer.writeByte(ascii.toUpper(current[0])) catch {
-                                unreachable;
-                            };
-                            _ = self.writer.write(current[1..]) catch {
-                                unreachable;
-                            };
+                            result[index] = ascii.toUpper(current[0]);
+                            mem.copyForwards(u8, result[index + 1 .. index + next_colon], current[1..]);
                         } else {
-                            self.renderCamelCase(current);
+                            const sub = self.generateCamelCase(current);
+                            mem.copyForwards(u8, result[index .. index + next_colon], sub);
                         }
                     }
+
+                    index += next_colon;
                     name = name[next_colon + 1 ..];
                 }
+
+                return result;
             } else {
-                self.renderCamelCase(name);
+                return self.generateCamelCase(name);
             }
         }
     }
@@ -1723,6 +1727,9 @@ const Renderer = struct {
                     if (framework != self.registry.owner) {
                         self.render("{s}.", .{framework.output_file});
                     }
+                    if (keyword_remap.get(result)) |remap| {
+                        result = remap;
+                    }
                     self.render("{s}", .{result});
                 } else {
                     std.log.err(
@@ -1740,7 +1747,12 @@ const Renderer = struct {
         }
     }
 
-    fn renderMethods(self: *@This(), methods_rendered: *std.StringHashMap(void), named: *Type.Named) void {
+    const MethodCache = struct {
+        render_count: std.StringHashMap(u32),
+        rendered: std.StringHashMap([]const u8),
+    };
+
+    fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
         switch (named.tag) {
             .protocol => |p| {
                 for (p.inherits.items) |super| {
@@ -1755,18 +1767,35 @@ const Renderer = struct {
                         },
                     }
 
-                    self.renderMethods(methods_rendered, s);
+                    self.renderMethods(cache, s);
                 }
 
                 for (p.methods.items) |m| {
-                    if (!methods_rendered.contains(m.asNamed().name)) {
-                        methods_rendered.put(m.asNamed().name, {}) catch {
+                    if (cache.rendered.contains(m.asNamed().name)) {
+                        continue;
+                    }
+
+                    const generated_name = self.generateFunctionName(m.asNamed().name);
+                    const e = cache.render_count.getOrPutValue(generated_name, 1) catch {
+                        @panic("OOM");
+                    };
+                    defer e.value_ptr.* += 1;
+
+                    if (e.value_ptr.* > 1) {
+                        const number_name = fmt.allocPrint(self.gpa, "{s}{}", .{ generated_name, e.value_ptr.* }) catch {
                             @panic("OOM");
                         };
-
-                        self.renderNamedDecl(m.asNamed());
-                        self.render("\n", .{});
+                        self.renderMethodDecl(number_name, m);
+                        cache.rendered.put(m.asNamed().name, number_name) catch {
+                            @panic("OOM");
+                        };
+                    } else {
+                        self.renderMethodDecl(generated_name, m);
+                        cache.rendered.put(m.asNamed().name, generated_name) catch {
+                            @panic("OOM");
+                        };
                     }
+                    self.render("\n", .{});
                 }
             },
             .interface => |i| {
@@ -1782,7 +1811,7 @@ const Renderer = struct {
                         },
                     }
 
-                    self.renderMethods(methods_rendered, s);
+                    self.renderMethods(cache, s);
                 }
 
                 for (i.protocols.items) |super| {
@@ -1797,17 +1826,35 @@ const Renderer = struct {
                         },
                     }
 
-                    self.renderMethods(methods_rendered, s);
+                    self.renderMethods(cache, s);
                 }
 
                 for (i.methods.items) |m| {
-                    if (!methods_rendered.contains(m.asNamed().name)) {
-                        methods_rendered.put(m.asNamed().name, {}) catch {
+                    if (cache.rendered.contains(m.asNamed().name)) {
+                        continue;
+                    }
+
+                    const generated_name = self.generateFunctionName(m.asNamed().name);
+                    const e = cache.render_count.getOrPutValue(generated_name, 1) catch {
+                        @panic("OOM");
+                    };
+                    defer e.value_ptr.* += 1;
+
+                    if (e.value_ptr.* > 1) {
+                        const number_name = fmt.allocPrint(self.gpa, "{s}{}", .{ generated_name, e.value_ptr.* }) catch {
                             @panic("OOM");
                         };
-                        self.renderNamedDecl(m.asNamed());
-                        self.render("\n", .{});
+                        self.renderMethodDecl(number_name, m);
+                        cache.rendered.put(m.asNamed().name, number_name) catch {
+                            @panic("OOM");
+                        };
+                    } else {
+                        self.renderMethodDecl(generated_name, m);
+                        cache.rendered.put(m.asNamed().name, generated_name) catch {
+                            @panic("OOM");
+                        };
                     }
+                    self.render("\n", .{});
                 }
             },
             else => {
@@ -1816,7 +1863,43 @@ const Renderer = struct {
         }
     }
 
-    fn renderNamedDecl(self: *@This(), named: *Type.Named) void {
+    fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method) void {
+        self.render("pub fn ", .{});
+        _ = self.writer.write(name) catch {
+            unreachable;
+        };
+        self.render("(_self: *@This()", .{});
+
+        if (method.params.items.len > 0) {
+            self.render(", ", .{});
+            for (method.params.items, 0..) |param, index| {
+                self.render("_{s}: ", .{param.asNamed().name});
+                self.renderTypeAsIdentifier(param.type);
+                if (method.params.items.len > 3 or index < method.params.items.len - 1) {
+                    self.render(", ", .{});
+                }
+            }
+        }
+
+        self.render(") ", .{});
+        self.renderTypeAsIdentifier(method.result.?);
+        self.render(" {{\n", .{});
+        self.render(
+            "        return objc.msgSend(_self, \"{s}\", ",
+            .{method.asNamed().name},
+        );
+        self.renderTypeAsIdentifier(method.result.?);
+        self.render(", .{{", .{});
+        for (method.params.items, 0..) |param, index| {
+            self.render("_{s}", .{param.asNamed().name});
+            if (method.params.items.len > 3 or index < method.params.items.len - 1) {
+                self.render(", ", .{});
+            }
+        }
+        self.render("}});\n    }}\n", .{});
+    }
+
+    fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         switch (named.tag) {
             .@"struct" => |s| {
                 self.render("pub const ", .{});
@@ -1833,6 +1916,8 @@ const Renderer = struct {
                 }
 
                 self.render("}};\n\n", .{});
+
+                return true;
             },
             .@"enum" => |s| {
                 self.render("pub const ", .{});
@@ -1877,7 +1962,7 @@ const Renderer = struct {
                             }
                         }
 
-                        if (!values.contains(last)) {
+                        if (last.len > 0 and !values.contains(last)) {
                             values.put(last, v.value) catch {
                                 @panic("OOM");
                             };
@@ -1891,6 +1976,8 @@ const Renderer = struct {
                 }
 
                 self.render("}};\n\n", .{});
+
+                return true;
             },
             .@"union" => |s| {
                 self.render("pub const ", .{});
@@ -1903,13 +1990,15 @@ const Renderer = struct {
                 }
 
                 self.render("}};\n\n", .{});
+
+                return true;
             },
             .typedef => |t| {
                 // Skip C types that have typedefs to add them to the C global namespace.
                 switch (t.child.?.*) {
                     .named => |n| {
                         if (mem.eql(u8, n.name, named.name)) {
-                            return;
+                            return false;
                         }
                     },
                     else => {},
@@ -1919,6 +2008,8 @@ const Renderer = struct {
                 self.render(" = ", .{});
                 self.renderTypeAsIdentifier(t.child.?);
                 self.render(";\n\n", .{});
+
+                return true;
             },
             .protocol => |p| {
                 self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
@@ -1948,20 +2039,26 @@ const Renderer = struct {
 
                 self.render("\n", .{});
 
-                var methods_rendered = std.StringHashMap(void).init(self.gpa);
-                methods_rendered.put("retain", {}) catch {
+                var rendered = std.StringHashMap([]const u8).init(self.gpa);
+                rendered.put("retain", "retain") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("release", {}) catch {
+                rendered.put("release", "release") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("autorelease", {}) catch {
+                rendered.put("autorelease", "autorelease") catch {
                     @panic("OOM");
                 };
 
-                self.renderMethods(&methods_rendered, named);
+                var cache = MethodCache{
+                    .render_count = std.StringHashMap(u32).init(self.gpa),
+                    .rendered = rendered,
+                };
+                self.renderMethods(&cache, named);
 
                 self.render("}};\n\n", .{});
+
+                return true;
             },
             .interface => |i| {
                 self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
@@ -2022,44 +2119,52 @@ const Renderer = struct {
                 self.render("    pub const allocInit = InternalInfo.allocInit;\n", .{});
                 self.render("\n", .{});
 
-                var methods_rendered = std.StringHashMap(void).init(self.gpa);
-                methods_rendered.put("retain", {}) catch {
+                var rendered = std.StringHashMap([]const u8).init(self.gpa);
+                rendered.put("retain", "retain") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("release", {}) catch {
+                rendered.put("release", "release") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("autorelease", {}) catch {
+                rendered.put("autorelease", "autorelease") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("new", {}) catch {
+                rendered.put("new", "new") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("alloc", {}) catch {
+                rendered.put("alloc", "alloc") catch {
                     @panic("OOM");
                 };
-                methods_rendered.put("allocInit", {}) catch {
+                rendered.put("allocInit", "allocInit") catch {
                     @panic("OOM");
                 };
 
-                self.renderMethods(&methods_rendered, named);
+                var cache = MethodCache{
+                    .render_count = std.StringHashMap(u32).init(self.gpa),
+                    .rendered = rendered,
+                };
+                self.renderMethods(&cache, named);
 
                 self.render("}};\n", .{});
                 if (is_generic) {
                     self.render("}}\n", .{});
                 }
                 self.render("\n", .{});
+
+                return true;
             },
             .method => |m| {
-                self.render("    pub fn ", .{});
-                self.renderTypeAsIdentifier(named.asType());
+                self.render("pub fn ", .{});
+                const out = self.generateFunctionName(named.name);
+                _ = self.writer.write(out) catch {
+                    unreachable;
+                };
                 self.render("(_self: *@This()", .{});
 
                 if (m.params.items.len > 0) {
                     self.render(", ", .{});
                     for (m.params.items, 0..) |param, index| {
-                        self.render("_{s}", .{param.asNamed().name});
-                        self.render(": ", .{});
+                        self.render("_{s}: ", .{param.asNamed().name});
                         self.renderTypeAsIdentifier(param.type);
                         if (m.params.items.len > 3 or index < m.params.items.len - 1) {
                             self.render(", ", .{});
@@ -2083,8 +2188,26 @@ const Renderer = struct {
                     }
                 }
                 self.render("}});\n    }}\n", .{});
+
+                return true;
             },
             .function => |f| {
+                var name = named.name;
+                switch (named.origin) {
+                    .framework => |ff| {
+                        if (self.frameworks.get(ff)) |framework| {
+                            if (framework.remove_prefix.len > 0 and mem.startsWith(u8, name, framework.remove_prefix)) {
+                                name = name[framework.remove_prefix.len..];
+                            }
+                        }
+                    },
+                    else => {},
+                }
+
+                const name_changed = !mem.eql(u8, name, named.name);
+                if (!name_changed) {
+                    self.render("pub ", .{});
+                }
                 self.render("extern \"{s}\" fn {s}(", .{ named.origin.framework, named.name });
 
                 for (f.params.items, 0..) |param, index| {
@@ -2102,57 +2225,53 @@ const Renderer = struct {
                 self.renderTypeAsIdentifier(f.result.?);
                 self.render(";\n", .{});
 
-                self.render("pub const ", .{});
-                var name = named.name;
+                if (name_changed) {
+                    self.render("pub const ", .{});
 
-                switch (named.origin) {
-                    .framework => |ff| {
-                        if (self.frameworks.get(ff)) |framework| {
-                            if (framework.remove_prefix.len > 0) {
-                                name = name[framework.remove_prefix.len..];
+                    if (keyword_remap.get(name)) |remap| {
+                        self.render("{s}", .{remap});
+                    } else {
+                        var index: u32 = 1;
+                        while (index < name.len) : (index += 1) {
+                            const it = name[index];
+                            if (ascii.isLower(it)) {
+                                index -= 1;
+                                break;
                             }
                         }
-                    },
-                    else => {},
-                }
-
-                if (keyword_remap.get(name)) |remap| {
-                    self.render("{s}", .{remap});
-                } else {
-                    var index: u32 = 1;
-                    while (index < name.len) : (index += 1) {
-                        const it = name[index];
-                        if (ascii.isLower(it)) {
-                            index -= 1;
-                            break;
-                        }
-                    }
-                    if (index == 0) {
-                        _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
-                            unreachable;
-                        };
-                        _ = self.writer.write(name[1..]) catch {
-                            unreachable;
-                        };
-                    } else {
-                        for (0..index) |i| {
-                            _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
+                        if (index == 0) {
+                            _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                                unreachable;
+                            };
+                            _ = self.writer.write(name[1..]) catch {
+                                unreachable;
+                            };
+                        } else {
+                            for (0..index) |i| {
+                                _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
+                                    unreachable;
+                                };
+                            }
+                            _ = self.writer.write(name[index..]) catch {
                                 unreachable;
                             };
                         }
-                        _ = self.writer.write(name[index..]) catch {
-                            unreachable;
-                        };
                     }
+
+                    self.render(" = {s};\n", .{named.name});
                 }
 
-                self.render(" = {s};\n\n", .{named.name});
+                self.render("\n", .{});
+
+                return true;
             },
             .type_reference,
             .class,
             => {},
             else => unreachable,
         }
+
+        return false;
     }
 
     fn renderNameAvoidKeywords(self: *@This(), name: []const u8) void {
@@ -2226,9 +2345,6 @@ const Renderer = struct {
                 self.renderTypeAsIdentifier(f.result);
             },
             .named => |*n| switch (n.tag) {
-                .method => {
-                    self.renderFunctionName(n.name);
-                },
                 .function => {
                     var name = n.name;
 
@@ -2243,7 +2359,10 @@ const Renderer = struct {
                         else => {},
                     }
 
-                    self.renderFunctionName(n.name);
+                    const out = self.generateFunctionName(name);
+                    _ = self.writer.write(out) catch {
+                        unreachable;
+                    };
                 },
                 .type_reference, .class => {
                     if (self.registry.lookupElaborated(n.name)) |e| {
@@ -2302,9 +2421,16 @@ fn renderFramework(args: struct {
     }
     self.render("\n", .{});
 
+    var declared = std.StringHashMap(void).init(args.gpa);
     for (self.registry.order.items) |o| {
-        const ref = self.registry.lookup(o.tag, o.name);
-        self.renderFrameworkDecl(ref.?);
-        progress.completeOne();
+        if (!declared.contains(o.name)) {
+            const ref = self.registry.lookup(o.tag, o.name);
+            if (self.renderFrameworkDecl(ref.?)) {
+                progress.completeOne();
+                declared.put(o.name, {}) catch {
+                    @panic("OOM");
+                };
+            }
+        }
     }
 }
