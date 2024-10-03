@@ -141,7 +141,8 @@
         "dependencies": [
             "CoreFoundation",
             "Foundation",
-            "IOSurface"
+            "IOSurface",
+            "CoreGraphics"
         ]
     },
     {

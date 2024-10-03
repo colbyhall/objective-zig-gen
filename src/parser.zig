@@ -85,6 +85,7 @@ pub const Type = union(enum) {
         pub const Method = struct {
             result: ?*Type,
             params: std.ArrayList(*Param),
+            kind: enum { instance, class },
 
             pub fn asNamed(self: *@This()) *Type.Named {
                 const tag_offset = @offsetOf(Type.Named, "tag");
@@ -153,8 +154,13 @@ pub const Type = union(enum) {
         };
 
         name: []const u8,
+
+        parent: ?*Named,
+        children: std.ArrayList(*Named),
+
         cursor: c.CXCursor,
         origin: Origin,
+
         tag: Tag,
 
         pub fn asType(self: *@This()) *Type {
@@ -260,15 +266,17 @@ pub const Registry = struct {
         const tag = meta.activeTag(named.tag);
         const map = self.getMap(tag);
 
-        if (!map.contains(named.name)) {
+        if (!map.contains(named.name) and named.parent == null) {
             self.order.append(.{ .tag = tag, .name = named.name }) catch {
                 @panic("OOM");
             };
         }
 
-        map.put(named.name, named) catch {
-            @panic("OOM");
-        };
+        if (!map.contains(named.name)) {
+            map.put(named.name, named) catch {
+                @panic("OOM");
+            };
+        }
     }
 
     pub fn lookup(self: *Self, tag: meta.Tag(Type.Named.Tag), name: []const u8) ?*Type.Named {
@@ -530,6 +538,8 @@ const Builder = struct {
                     result.* = .{
                         .named = .{
                             .name = self.allocName(name),
+                            .parent = null,
+                            .children = std.ArrayList(*Type.Named).init(self.gpa),
                             .cursor = c.clang_getNullCursor(),
                             .origin = origin,
                             .tag = .{
@@ -626,6 +636,8 @@ const Builder = struct {
                     result.* = .{
                         .named = .{
                             .name = name,
+                            .parent = null,
+                            .children = std.ArrayList(*Type.Named).init(self.gpa),
                             .origin = origin,
                             .cursor = c.clang_getNullCursor(),
                             .tag = .{
@@ -649,6 +661,8 @@ const Builder = struct {
                         result.* = .{
                             .named = .{
                                 .name = name,
+                                .parent = null,
+                                .children = std.ArrayList(*Type.Named).init(self.gpa),
                                 .origin = origin,
                                 .cursor = c.clang_getNullCursor(),
                                 .tag = .{
@@ -746,6 +760,8 @@ pub fn parse(
         typedef.* = .{
             .named = .{
                 .name = "__uint128_t",
+                .parent = null,
+                .children = std.ArrayList(*Type.Named).init(builder.gpa),
                 .cursor = c.clang_getNullCursor(),
                 .origin = .{
                     .runtime = {},
@@ -816,14 +832,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
             const child = builder.analyzeType(origin, child_type);
 
-            if (c.clang_getCursorKind(parent_cursor) != c.CXCursor_TranslationUnit) {
-                std.debug.print("Typedef('{s}') in {s}\n", .{ name, builder.parent().?.name });
-            }
-
             const typedef = builder.allocType();
             typedef.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -833,7 +847,14 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&typedef.named) catch {
+                    @panic("OOM");
+                };
+            }
             builder.registry.insert(&typedef.named);
+            builder.push(&typedef.named);
 
             return c.CXChildVisit_Continue;
         },
@@ -842,6 +863,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             union_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -851,6 +874,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&union_decl.named) catch {
+                    @panic("OOM");
+                };
+            }
             builder.registry.insert(&union_decl.named);
             builder.push(&union_decl.named);
 
@@ -861,6 +890,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             struct_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -870,6 +901,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&struct_decl.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             builder.registry.insert(&struct_decl.named);
             builder.push(&struct_decl.named);
 
@@ -894,6 +932,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             field.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -903,6 +943,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&field.named) catch {
+                    @panic("OOM");
+                };
+            }
 
             const parent = builder.parent().?;
             switch (parent.tag) {
@@ -925,6 +971,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             function_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -935,6 +983,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&function_decl.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             builder.registry.insert(&function_decl.named);
             builder.push(&function_decl.named);
 
@@ -946,6 +1001,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             param.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -955,6 +1012,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&param.named) catch {
+                    @panic("OOM");
+                };
+            }
 
             const parent = builder.parent().?;
             switch (parent.tag) {
@@ -968,6 +1031,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         @panic("OOM");
                     };
                 },
+                .typedef => {},
                 else => unreachable,
             }
         },
@@ -985,6 +1049,24 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                             }
                         }
                     },
+                    .typedef => |*t| {
+                        const inner = builder.allocType();
+                        inner.* = .{
+                            .named = .{
+                                .name = builder.allocName(name),
+                                .parent = parent,
+                                .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                                .cursor = cursor,
+                                .origin = origin,
+                                .tag = .{
+                                    .identifier = .{
+                                        .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                    },
+                                },
+                            },
+                        };
+                        t.child = inner;
+                    },
                     else => {
                         unreachable;
                     },
@@ -997,6 +1079,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             enum_decl.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -1007,6 +1091,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&enum_decl.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             builder.push(&enum_decl.named);
             builder.registry.insert(&enum_decl.named);
 
@@ -1034,6 +1125,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             protocol.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -1044,6 +1137,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&protocol.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             builder.registry.insert(&protocol.named);
             builder.push(&protocol.named);
 
@@ -1055,17 +1155,26 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             method.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
                         .method = .{
                             .result = result,
                             .params = std.ArrayList(*Type.Named.Param).init(builder.gpa),
+                            .kind = if (kind == c.CXCursor_ObjCInstanceMethodDecl) .instance else .class,
                         },
                     },
                 },
             };
             defer builder.push(&method.named);
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&method.named) catch {
+                    @panic("OOM");
+                };
+            }
 
             const parent = builder.parent().?;
             switch (parent.tag) {
@@ -1100,6 +1209,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 class.* = .{
                     .named = .{
                         .name = builder.allocName(name),
+                        .parent = builder.parent(),
+                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
                         .cursor = cursor,
                         .origin = origin,
                         .tag = .{
@@ -1107,6 +1218,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         },
                     },
                 };
+
+                if (builder.parent()) |parent| {
+                    parent.children.append(&class.named) catch {
+                        @panic("OOM");
+                    };
+                }
+
                 builder.registry.insert(&class.named);
                 builder.push(&class.named);
             }
@@ -1118,6 +1236,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             interface.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -1130,6 +1250,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&interface.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             builder.registry.insert(&interface.named);
             builder.push(&interface.named);
 
@@ -1150,14 +1277,21 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         ref.* = .{
                             .named = .{
                                 .name = builder.allocName(name),
+                                .parent = builder.parent(),
+                                .children = std.ArrayList(*Type.Named).init(builder.gpa),
                                 .cursor = cursor,
                                 .origin = origin,
                                 .tag = .{ .class = .{} },
                             },
                         };
+
+                        parent.children.append(&ref.named) catch {
+                            @panic("OOM");
+                        };
                     }
                     super = &ref.named;
                 }
+
                 switch (parent.tag) {
                     .protocol => |*i| {
                         i.inherits.append(super) catch {
@@ -1179,6 +1313,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             super.* = .{
                 .named = .{
                     .name = builder.allocName(name),
+                    .parent = builder.parent(),
+                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -1188,6 +1324,13 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     },
                 },
             };
+
+            if (builder.parent()) |parent| {
+                parent.children.append(&super.named) catch {
+                    @panic("OOM");
+                };
+            }
+
             const parent = builder.parent().?;
             switch (parent.tag) {
                 .interface => |*i| {
@@ -1244,6 +1387,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_IBActionAttr,
         c.CXCursor_ObjCRequiresSuper,
         c.CXCursor_ObjCSubclassingRestricted,
+        c.CXCursor_ObjCIndependentClass,
         => {},
         else => {
             std.log.err(

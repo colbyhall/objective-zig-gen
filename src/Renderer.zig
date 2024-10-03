@@ -122,7 +122,10 @@ fn generateFunctionName(self: *@This(), in_name: []const u8) []const u8 {
     }
 }
 
-fn renderNamedName(self: *@This(), named: *Type.Named) void {
+fn renderNamedName(self: *@This(), named: *Type.Named, options: struct {
+    ignore_framework: bool = false,
+    ignore_parents: bool = false,
+}) void {
     switch (named.origin) {
         .runtime => self.render("objc.{s}", .{named.name}),
         .framework => |f| {
@@ -166,14 +169,43 @@ fn renderNamedName(self: *@This(), named: *Type.Named) void {
                 }
 
                 var result = named.name;
-                if (framework.remove_prefix.len > 0 and !mem.eql(u8, named.name, framework.remove_prefix)) {
-                    if (mem.startsWith(u8, named.name, framework.remove_prefix)) {
-                        result = result[framework.remove_prefix.len..];
+                if (named.parent) |parent| {
+                    if (mem.startsWith(u8, named.name, parent.name)) {
+                        result = result[parent.name.len..];
+                    } else {
+                        if (framework.remove_prefix.len > 0 and !mem.eql(u8, named.name, framework.remove_prefix)) {
+                            if (mem.startsWith(u8, named.name, framework.remove_prefix)) {
+                                result = result[framework.remove_prefix.len..];
+                            }
+                        }
+                    }
+                } else {
+                    if (framework.remove_prefix.len > 0 and !mem.eql(u8, named.name, framework.remove_prefix)) {
+                        if (mem.startsWith(u8, named.name, framework.remove_prefix)) {
+                            result = result[framework.remove_prefix.len..];
+                        }
                     }
                 }
-                if (framework != self.registry.owner) {
+                if (!options.ignore_framework and framework != self.registry.owner) {
                     self.render("{s}.", .{framework.output_file});
                 }
+
+                if (!options.ignore_parents) {
+                    var hierarchy = std.ArrayList(*Type.Named).init(self.gpa);
+                    var root_type = named;
+                    while (root_type.parent != null) {
+                        hierarchy.insert(0, root_type.parent.?) catch {
+                            @panic("OOM");
+                        };
+                        root_type = root_type.parent.?;
+                    }
+
+                    for (hierarchy.items) |i| {
+                        self.renderNamedName(i, .{ .ignore_parents = true });
+                        self.render(".", .{});
+                    }
+                }
+
                 if (keyword_remap.get(result)) |remap| {
                     result = remap;
                 }
@@ -315,24 +347,35 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
     _ = self.writer.write(name) catch {
         unreachable;
     };
-    self.render("(_self: *@This()", .{});
+    self.render("(", .{});
 
-    if (method.params.items.len > 0) {
-        self.render(", ", .{});
-        for (method.params.items, 0..) |param, index| {
-            self.render("_{s}: ", .{param.asNamed().name});
-            self.renderTypeAsIdentifier(param.type);
-            if (method.params.items.len > 3 or index < method.params.items.len - 1) {
-                self.render(", ", .{});
-            }
+    if (method.kind == .instance) {
+        self.render("_self: *@This()", .{});
+
+        if (method.params.items.len > 0) {
+            self.render(", ", .{});
+        }
+    }
+
+    for (method.params.items, 0..) |param, index| {
+        self.render("_{s}: ", .{param.asNamed().name});
+        self.renderTypeAsIdentifier(param.type);
+        if (method.params.items.len > 3 or index < method.params.items.len - 1) {
+            self.render(", ", .{});
         }
     }
 
     self.render(") ", .{});
     self.renderTypeAsIdentifier(method.result.?);
     self.render(" {{\n", .{});
+    self.render("return objc.msgSend(", .{});
+    if (method.kind == .class) {
+        self.render("InternalInfo.class(), ", .{});
+    } else {
+        self.render("_self, ", .{});
+    }
     self.render(
-        "        return objc.msgSend(_self, \"{s}\", ",
+        "\"{s}\", ",
         .{method.asNamed().name},
     );
     self.renderTypeAsIdentifier(method.result.?);
@@ -346,16 +389,36 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
     self.render("}});\n    }}\n", .{});
 }
 
+fn renderChildrenDecl(self: *@This(), children: []const *Type.Named) void {
+    var rendered = std.StringHashMap(void).init(self.gpa);
+    for (children) |c| {
+        switch (c.tag) {
+            .@"struct", .@"union", .@"enum", .interface, .protocol, .typedef => {
+                if (!rendered.contains(c.name)) {
+                    if (self.renderNamedDecl(c)) {
+                        rendered.put(c.name, {}) catch {
+                            @panic("OOM");
+                        };
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
 fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
     switch (named.tag) {
         .@"struct" => |s| {
             self.render("pub const ", .{});
-            self.renderNamedName(named);
+            self.renderNamedName(named, .{ .ignore_parents = true });
             self.render(" = extern ", .{});
             if (s.@"packed" > 0) {
                 self.render("packed ", .{});
             }
             self.render("struct {{", .{});
+
+            self.renderChildrenDecl(named.children.items);
 
             if (s.fields.items.len > 0) {
                 self.render("\n", .{});
@@ -368,7 +431,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         },
         .@"enum" => |s| {
             self.render("pub const ", .{});
-            self.renderNamedName(named);
+            self.renderNamedName(named, .{ .ignore_parents = true });
             self.render(" = enum(", .{});
             self.renderTypeAsIdentifier(s.backing);
             self.render(") {{", .{});
@@ -428,8 +491,10 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         },
         .@"union" => |s| {
             self.render("pub const ", .{});
-            self.renderNamedName(named);
+            self.renderNamedName(named, .{ .ignore_parents = true });
             self.render(" = extern union {{", .{});
+
+            self.renderChildrenDecl(named.children.items);
 
             if (s.fields.items.len > 0) {
                 self.render("\n", .{});
@@ -451,7 +516,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                 else => {},
             }
             self.render("pub const ", .{});
-            self.renderNamedName(named);
+            self.renderNamedName(named, .{ .ignore_parents = true });
             self.render(" = ", .{});
             self.renderTypeAsIdentifier(t.child.?);
             self.render(";\n\n", .{});
@@ -461,9 +526,11 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         .protocol => |p| {
             self.render("/// https://developer.apple.com/documentation/{s}/{s}?language=objc\n", .{ named.origin.framework, named.name });
             self.render("pub const ", .{});
-            self.renderNamedName(named);
+            self.renderNamedName(named, .{ .ignore_parents = true });
             self.render(" = opaque {{", .{});
             self.render("\n", .{});
+
+            self.renderChildrenDecl(named.children.items);
 
             self.render(
                 "    pub const InternalInfo = objc.ExternProtocol(@This(), &.{{",
@@ -471,7 +538,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             );
 
             for (p.inherits.items, 0..) |n, index| {
-                self.renderNamedName(n);
+                self.renderNamedName(n, .{ .ignore_parents = true });
 
                 if (index < p.inherits.items.len - 1) {
                     self.render(", ", .{});
@@ -513,7 +580,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             const is_generic = i.type_parameters.items.len > 0;
             if (is_generic) {
                 self.render("pub fn ", .{});
-                self.renderNamedName(named);
+                self.renderNamedName(named, .{ .ignore_parents = true });
                 self.render("(", .{});
                 for (i.type_parameters.items, 0..) |p, index| {
                     self.render("comptime ", .{});
@@ -532,10 +599,12 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                 self.render("return struct {{", .{});
             } else {
                 self.render("pub const ", .{});
-                self.renderNamedName(named);
+                self.renderNamedName(named, .{ .ignore_parents = true });
                 self.render(" = opaque {{", .{});
             }
             self.render("\n", .{});
+
+            self.renderChildrenDecl(named.children.items);
 
             self.render(
                 "    pub const InternalInfo = objc.ExternClass(\"{s}\", @This(), ",
@@ -828,7 +897,7 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                 }
             },
             else => {
-                self.renderNamedName(n);
+                self.renderNamedName(n, .{});
             },
         },
         else => {

@@ -215,3 +215,11 @@ pub fn ExternProtocol(T: type, comptime super_protocols: []const type) type {
         }
     };
 }
+
+// TODO: These need to be 32 bit on 32 bit platforms
+pub const NSUInteger = u64;
+pub const NSInteger = i64;
+pub const BOOL = enum(i8) {
+    NO,
+    YES,
+};
