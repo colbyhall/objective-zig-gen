@@ -432,13 +432,11 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         .@"enum" => |s| {
             self.render("pub const ", .{});
             self.renderNamedName(named, .{ .ignore_parents = true });
-            self.render(" = enum(", .{});
+            self.render(" = struct {{\npub const Value = ", .{});
             self.renderTypeAsIdentifier(s.backing);
-            self.render(") {{", .{});
+            self.render(";\n\n", .{});
 
             if (s.values.items.len > 0) {
-                self.render("\n", .{});
-
                 var values = std.StringHashMap(i64).init(self.gpa);
                 for (s.values.items) |v| {
                     var name = v.name;
@@ -477,10 +475,11 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                             @panic("OOM");
                         };
 
+                        self.render("pub const ", .{});
                         if (ascii.isDigit(last[0])) {
                             self.render("_", .{});
                         }
-                        self.render("{s} = {},\n", .{ last, v.value });
+                        self.render("{s}: Value = {};\n", .{ last, v.value });
                     }
                 }
             }
@@ -895,6 +894,20 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                     std.log.err("Failed to find {s} in framework {s}.", .{ n.name, self.registry.owner.name });
                     unreachable;
                 }
+            },
+            .typedef => |t| {
+                switch (t.child.?.*) {
+                    .named => {
+                        self.renderTypeAsIdentifier(t.child.?);
+                    },
+                    else => {
+                        self.renderNamedName(n, .{});
+                    },
+                }
+            },
+            .@"enum" => {
+                self.renderNamedName(n, .{});
+                self.render(".Value", .{});
             },
             else => {
                 self.renderNamedName(n, .{});

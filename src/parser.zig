@@ -856,7 +856,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             builder.registry.insert(&typedef.named);
             builder.push(&typedef.named);
 
-            return c.CXChildVisit_Continue;
+            return c.CXChildVisit_Recurse;
         },
         c.CXCursor_UnionDecl => {
             const union_decl = builder.allocType();
@@ -1074,32 +1074,36 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             }
         },
         c.CXCursor_EnumDecl => {
-            const backing = builder.analyzeType(origin, c.clang_getEnumDeclIntegerType(cursor));
-            const enum_decl = builder.allocType();
-            enum_decl.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .parent = builder.parent(),
-                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .@"enum" = .{
-                            .backing = backing,
-                            .values = std.ArrayList(Type.Named.Enum.Value).init(builder.gpa),
+            if (builder.registry.lookup(.@"enum", name)) |enum_decl| {
+                enum_decl.cursor = cursor;
+                builder.push(enum_decl);
+            } else {
+                const backing = builder.analyzeType(origin, c.clang_getEnumDeclIntegerType(cursor));
+                const enum_decl = builder.allocType();
+                enum_decl.* = .{
+                    .named = .{
+                        .name = builder.allocName(name),
+                        .parent = builder.parent(),
+                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                        .cursor = cursor,
+                        .origin = origin,
+                        .tag = .{
+                            .@"enum" = .{
+                                .backing = backing,
+                                .values = std.ArrayList(Type.Named.Enum.Value).init(builder.gpa),
+                            },
                         },
                     },
-                },
-            };
-
-            if (builder.parent()) |parent| {
-                parent.children.append(&enum_decl.named) catch {
-                    @panic("OOM");
                 };
-            }
 
-            builder.push(&enum_decl.named);
-            builder.registry.insert(&enum_decl.named);
+                if (builder.parent()) |parent| {
+                    parent.children.append(&enum_decl.named) catch {
+                        @panic("OOM");
+                    };
+                }
+                builder.registry.insert(&enum_decl.named);
+                builder.push(&enum_decl.named);
+            }
 
             return c.CXChildVisit_Recurse;
         },
