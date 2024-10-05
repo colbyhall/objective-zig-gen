@@ -237,7 +237,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
             for (p.inherits.items) |super| {
                 var s = super;
                 switch (super.tag) {
-                    .class => {
+                    .identifier => {
                         s = self.registry.lookup(.protocol, super.name).?;
                     },
                     .protocol => {},
@@ -281,7 +281,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
             if (i.super) |super| {
                 var s = super;
                 switch (super.tag) {
-                    .class, .identifier => {
+                    .identifier => {
                         s = self.registry.lookup(.interface, super.name).?;
                     },
                     .interface => {},
@@ -296,7 +296,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
             for (i.protocols.items) |super| {
                 var s = super;
                 switch (super.tag) {
-                    .class => {
+                    .identifier => {
                         s = self.registry.lookup(.protocol, super.name).?;
                     },
                     .protocol => {},
@@ -370,7 +370,7 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
     self.render(" {{\n", .{});
     self.render("return objc.msgSend(", .{});
     if (method.kind == .class) {
-        self.render("InternalInfo.class(), ", .{});
+        self.render("Internal.class(), ", .{});
     } else {
         self.render("_self, ", .{});
     }
@@ -420,9 +420,9 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
 
             self.renderChildrenDecl(named.children.items);
 
-            if (s.fields.items.len > 0) {
+            if (s.fields.count() > 0) {
                 self.render("\n", .{});
-                self.renderFieldDecls(s.fields.items);
+                self.renderFieldDecls(s.fields);
             }
 
             self.render("}};\n\n", .{});
@@ -432,9 +432,9 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         .@"enum" => |s| {
             self.render("pub const ", .{});
             self.renderNamedName(named, .{ .ignore_parents = true });
-            self.render(" = struct {{\npub const Value = ", .{});
+            self.render(" = ", .{});
             self.renderTypeAsIdentifier(s.backing);
-            self.render(";\n\n", .{});
+            self.render(";\n", .{});
 
             if (s.values.items.len > 0) {
                 var values = std.StringHashMap(i64).init(self.gpa);
@@ -476,15 +476,15 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                         };
 
                         self.render("pub const ", .{});
-                        if (ascii.isDigit(last[0])) {
-                            self.render("_", .{});
-                        }
-                        self.render("{s}: Value = {};\n", .{ last, v.value });
+                        self.renderNamedName(named, .{ .ignore_parents = true });
+                        self.render("_{s}: ", .{last});
+                        self.renderTypeAsIdentifier(s.backing);
+                        self.render(" = {};\n", .{v.value});
                     }
                 }
             }
 
-            self.render("}};\n\n", .{});
+            self.render("\n", .{});
 
             return true;
         },
@@ -495,9 +495,9 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
 
             self.renderChildrenDecl(named.children.items);
 
-            if (s.fields.items.len > 0) {
+            if (s.fields.count() > 0) {
                 self.render("\n", .{});
-                self.renderFieldDecls(s.fields.items);
+                self.renderFieldDecls(s.fields);
             }
 
             self.render("}};\n\n", .{});
@@ -532,7 +532,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             self.renderChildrenDecl(named.children.items);
 
             self.render(
-                "    pub const InternalInfo = objc.ExternProtocol(@This(), &.{{",
+                "    pub const Internal = objc.ExternProtocol(@This(), &.{{",
                 .{},
             );
 
@@ -545,10 +545,10 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             }
             self.render("}});\n", .{});
 
-            self.render("    pub const as = InternalInfo.as;\n", .{});
-            self.render("    pub const retain = InternalInfo.retain;\n", .{});
-            self.render("    pub const release = InternalInfo.release;\n", .{});
-            self.render("    pub const autorelease = InternalInfo.autorelease;\n", .{});
+            self.render("    pub const as = Internal.as;\n", .{});
+            self.render("    pub const retain = Internal.retain;\n", .{});
+            self.render("    pub const release = Internal.release;\n", .{});
+            self.render("    pub const autorelease = Internal.autorelease;\n", .{});
 
             self.render("\n", .{});
 
@@ -606,7 +606,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             self.renderChildrenDecl(named.children.items);
 
             self.render(
-                "    pub const InternalInfo = objc.ExternClass(\"{s}\", @This(), ",
+                "    pub const Internal = objc.ExternClass(\"{s}\", @This(), ",
                 .{named.name},
             );
             if (i.super) |super| {
@@ -625,13 +625,12 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
 
             self.render("}});\n", .{});
 
-            self.render("    pub const as = InternalInfo.as;\n", .{});
-            self.render("    pub const retain = InternalInfo.retain;\n", .{});
-            self.render("    pub const release = InternalInfo.release;\n", .{});
-            self.render("    pub const autorelease = InternalInfo.autorelease;\n", .{});
-            self.render("    pub const new = InternalInfo.new;\n", .{});
-            self.render("    pub const alloc = InternalInfo.alloc;\n", .{});
-            self.render("    pub const allocInit = InternalInfo.allocInit;\n", .{});
+            self.render("    pub const as = Internal.as;\n", .{});
+            self.render("    pub const retain = Internal.retain;\n", .{});
+            self.render("    pub const release = Internal.release;\n", .{});
+            self.render("    pub const autorelease = Internal.autorelease;\n", .{});
+            self.render("    pub const new = Internal.new;\n", .{});
+            self.render("    pub const alloc = Internal.alloc;\n", .{});
             self.render("\n", .{});
 
             var rendered = std.StringHashMap([]const u8).init(self.gpa);
@@ -648,9 +647,6 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                 @panic("OOM");
             };
             rendered.put("alloc", "alloc") catch {
-                @panic("OOM");
-            };
-            rendered.put("allocInit", "allocInit") catch {
                 @panic("OOM");
             };
 
@@ -781,7 +777,6 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             return true;
         },
         .identifier,
-        .class,
         => {},
         else => unreachable,
     }
@@ -798,12 +793,13 @@ fn renderNameAvoidKeywords(self: *@This(), name: []const u8) void {
     self.render("{s}", .{result});
 }
 
-fn renderFieldDecls(self: *@This(), fields: []const *Type.Named.Field) void {
-    for (fields) |f| {
-        const n = f.asNamed();
+fn renderFieldDecls(self: *@This(), fields: std.StringArrayHashMap(*Type.Named.Field)) void {
+    var iter = fields.iterator();
+    while (iter.next()) |pair| {
+        const f = pair.value_ptr.*;
 
         self.render("    ", .{});
-        self.renderNameAvoidKeywords(n.name);
+        self.renderNameAvoidKeywords(pair.key_ptr.*);
         self.render(": ", .{});
         self.renderTypeAsIdentifier(f.type);
         self.render(",\n", .{});
@@ -812,9 +808,9 @@ fn renderFieldDecls(self: *@This(), fields: []const *Type.Named.Field) void {
 
 fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
     switch (@"type".*) {
-        .objc_id => self.render("*objc.Id", .{}),
-        .objc_class => self.render("*objc.Class", .{}),
-        .objc_sel => self.render("*objc.SEL", .{}),
+        .objc_id => self.render("?objc.Id", .{}),
+        .objc_class => self.render("objc.Class", .{}),
+        .objc_sel => self.render("objc.Selector", .{}),
         .base_protocol => self.render("*objc.Protocol", .{}),
         .instancetype => self.render("*@This()", .{}),
         .void => self.render("void", .{}),
@@ -879,35 +875,13 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                     unreachable;
                 };
             },
-            .identifier, .class => {
+            .identifier => {
                 if (self.registry.lookupElaborated(n.name)) |e| {
-                    switch (e.tag) {
-                        .identifier, .class => {
-                            std.log.err("Found TypeReference or Class pointing to class or type reference. Parent: {s}, Child: {s}. Framework {s}", .{ n.name, e.name, self.registry.owner.name });
-                            self.render("anyopaque", .{});
-                        },
-                        else => {
-                            self.renderTypeAsIdentifier(e.asType());
-                        },
-                    }
+                    self.renderTypeAsIdentifier(e.asType());
                 } else {
                     std.log.err("Failed to find {s} in framework {s}.", .{ n.name, self.registry.owner.name });
-                    unreachable;
+                    self.render("anyopaque", .{});
                 }
-            },
-            .typedef => |t| {
-                switch (t.child.?.*) {
-                    .named => {
-                        self.renderTypeAsIdentifier(t.child.?);
-                    },
-                    else => {
-                        self.renderNamedName(n, .{});
-                    },
-                }
-            },
-            .@"enum" => {
-                self.renderNamedName(n, .{});
-                self.render(".Value", .{});
             },
             else => {
                 self.renderNamedName(n, .{});

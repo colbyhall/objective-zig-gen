@@ -116,6 +116,46 @@ pub fn main() !void {
                         continue;
                     }
 
+                    // Merge typedefs
+                    {
+                        var iter = b.typedefs.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.typedefs.contains(it.key_ptr.*)) {
+                                try a.typedefs.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+
+                    // Merge structs
+                    {
+                        var iter = b.structs.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.structs.contains(it.key_ptr.*)) {
+                                try a.structs.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+
+                    // Merge unions
+                    {
+                        var iter = b.unions.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.unions.contains(it.key_ptr.*)) {
+                                try a.unions.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+
+                    // Merge enums
+                    {
+                        var iter = b.enums.iterator();
+                        while (iter.next()) |it| {
+                            if (!a.enums.contains(it.key_ptr.*)) {
+                                try a.enums.put(it.key_ptr.*, it.value_ptr.*);
+                            }
+                        }
+                    }
+
                     // Merge interfaces
                     {
                         var iter = b.interfaces.iterator();

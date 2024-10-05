@@ -24,14 +24,14 @@ pub const Type = union(enum) {
         pub const Field = struct {
             type: *Type,
 
-            pub fn asNamed(self: *@This()) *Type.Named {
+            pub fn asNamed(self: *Field) *Type.Named {
                 const tag_offset = @offsetOf(Type.Named, "tag");
                 const tag: *Tag = @fieldParentPtr("field", self);
                 return @ptrFromInt(@intFromPtr(tag) - tag_offset);
             }
         };
         pub const Union = struct {
-            fields: std.ArrayList(*Field),
+            fields: std.StringArrayHashMap(*Field),
 
             pub fn asNamed(self: *@This()) *Type.Named {
                 const tag_offset = @offsetOf(Type.Named, "tag");
@@ -41,7 +41,7 @@ pub const Type = union(enum) {
         };
         pub const Struct = struct {
             @"packed": u1 = 0,
-            fields: std.ArrayList(*Field),
+            fields: std.StringArrayHashMap(*Field),
 
             pub fn asNamed(self: *@This()) *Type.Named {
                 const tag_offset = @offsetOf(Type.Named, "tag");
@@ -143,7 +143,6 @@ pub const Type = union(enum) {
             method: Method,
             protocol: Protocol,
             interface: Interface,
-            class: Class,
             identifier: Identifier,
             type_param,
         };
@@ -219,7 +218,6 @@ pub const Registry = struct {
     functions: std.StringHashMap(*Type.Named),
     enums: std.StringHashMap(*Type.Named),
     protocols: std.StringHashMap(*Type.Named),
-    classes: std.StringHashMap(*Type.Named),
     interfaces: std.StringHashMap(*Type.Named),
 
     pub const Order = struct {
@@ -241,7 +239,6 @@ pub const Registry = struct {
             .functions = std.StringHashMap(*Type.Named).init(allocator),
             .enums = std.StringHashMap(*Type.Named).init(allocator),
             .protocols = std.StringHashMap(*Type.Named).init(allocator),
-            .classes = std.StringHashMap(*Type.Named).init(allocator),
             .interfaces = std.StringHashMap(*Type.Named).init(allocator),
         };
     }
@@ -254,7 +251,6 @@ pub const Registry = struct {
             .function => &self.functions,
             .@"enum" => &self.enums,
             .protocol => &self.protocols,
-            .class => &self.classes,
             .interface => &self.interfaces,
             else => @panic("Type is not supported by Registry."),
         };
@@ -321,9 +317,6 @@ pub const Registry = struct {
                     return u;
                 }
                 if (self.interfaces.get(lookup_name)) |u| {
-                    return u;
-                }
-                if (self.classes.get(lookup_name)) |u| {
                     return u;
                 }
             },
@@ -524,8 +517,6 @@ const Builder = struct {
                     result.* = .{
                         .va_list = {},
                     };
-                } else if (self.registry.lookupElaborated(name)) |u| {
-                    return u.asType();
                 } else {
                     if (mem.indexOf(u8, name, "enum ")) |index| {
                         name = name[index + 5 ..];
@@ -592,17 +583,25 @@ const Builder = struct {
             c.CXType_Typedef => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookupElaborated(name)) |u| {
-                    return u.asType();
+                if (mem.eql(u8, name, "instancetype")) {
+                    result.* = .{
+                        .instancetype = {},
+                    };
                 } else {
-                    if (mem.eql(u8, name, "instancetype")) {
-                        result.* = .{
-                            .instancetype = {},
-                        };
-                    } else {
-                        std.log.err("Failed to find {s}", .{name});
-                        unreachable;
-                    }
+                    result.* = .{
+                        .named = .{
+                            .name = self.allocName(name),
+                            .parent = null,
+                            .children = std.ArrayList(*Type.Named).init(self.gpa),
+                            .cursor = c.clang_getNullCursor(),
+                            .origin = origin,
+                            .tag = .{
+                                .identifier = .{
+                                    .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                },
+                            },
+                        },
+                    };
                 }
             },
             c.CXType_IncompleteArray => {
@@ -666,12 +665,12 @@ const Builder = struct {
                                 .origin = origin,
                                 .cursor = c.clang_getNullCursor(),
                                 .tag = .{
-                                    .class = .{},
+                                    .identifier = .{
+                                        .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                    },
                                 },
                             },
                         };
-                        // std.log.err("Failed to find {s}", .{name});
-                        // unreachable;
                     }
                 }
             },
@@ -829,87 +828,102 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
     const kind = c.clang_getCursorKind(cursor);
     switch (kind) {
         c.CXCursor_TypedefDecl => {
-            const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
-            const child = builder.analyzeType(origin, child_type);
+            if (builder.registry.lookup(.typedef, name)) |typedef| {
+                typedef.cursor = cursor;
+                builder.push(typedef);
+            } else {
+                const child_type = c.clang_getTypedefDeclUnderlyingType(cursor);
+                const child = builder.analyzeType(origin, child_type);
 
-            const typedef = builder.allocType();
-            typedef.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .parent = builder.parent(),
-                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .typedef = .{
-                            .child = child,
+                const typedef = builder.allocType();
+                typedef.* = .{
+                    .named = .{
+                        .name = builder.allocName(name),
+                        .parent = builder.parent(),
+                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                        .cursor = cursor,
+                        .origin = origin,
+                        .tag = .{
+                            .typedef = .{
+                                .child = child,
+                            },
                         },
                     },
-                },
-            };
-
-            if (builder.parent()) |parent| {
-                parent.children.append(&typedef.named) catch {
-                    @panic("OOM");
                 };
+
+                if (builder.parent()) |parent| {
+                    parent.children.append(&typedef.named) catch {
+                        @panic("OOM");
+                    };
+                }
+                builder.registry.insert(&typedef.named);
+                builder.push(&typedef.named);
             }
-            builder.registry.insert(&typedef.named);
-            builder.push(&typedef.named);
 
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_UnionDecl => {
-            const union_decl = builder.allocType();
-            union_decl.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .parent = builder.parent(),
-                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .@"union" = .{
-                            .fields = std.ArrayList(*Type.Named.Field).init(builder.gpa),
+            if (builder.registry.lookup(.@"union", name)) |union_decl| {
+                union_decl.cursor = cursor;
+                builder.push(union_decl);
+            } else {
+                const union_decl = builder.allocType();
+                union_decl.* = .{
+                    .named = .{
+                        .name = builder.allocName(name),
+                        .parent = builder.parent(),
+                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                        .cursor = cursor,
+                        .origin = origin,
+                        .tag = .{
+                            .@"union" = .{
+                                .fields = std.StringArrayHashMap(*Type.Named.Field).init(builder.gpa),
+                            },
                         },
                     },
-                },
-            };
-
-            if (builder.parent()) |parent| {
-                parent.children.append(&union_decl.named) catch {
-                    @panic("OOM");
                 };
+
+                if (builder.parent()) |parent| {
+                    parent.children.append(&union_decl.named) catch {
+                        @panic("OOM");
+                    };
+                }
+                builder.registry.insert(&union_decl.named);
+                builder.push(&union_decl.named);
             }
-            builder.registry.insert(&union_decl.named);
-            builder.push(&union_decl.named);
 
             return c.CXChildVisit_Recurse;
         },
         c.CXCursor_StructDecl => {
-            const struct_decl = builder.allocType();
-            struct_decl.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .parent = builder.parent(),
-                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .@"struct" = .{
-                            .fields = std.ArrayList(*Type.Named.Field).init(builder.gpa),
+            if (builder.registry.lookup(.@"struct", name)) |struct_decl| {
+                struct_decl.cursor = cursor;
+                builder.push(struct_decl);
+            } else {
+                const struct_decl = builder.allocType();
+                struct_decl.* = .{
+                    .named = .{
+                        .name = builder.allocName(name),
+                        .parent = builder.parent(),
+                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                        .cursor = cursor,
+                        .origin = origin,
+                        .tag = .{
+                            .@"struct" = .{
+                                .fields = std.StringArrayHashMap(*Type.Named.Field).init(builder.gpa),
+                            },
                         },
                     },
-                },
-            };
-
-            if (builder.parent()) |parent| {
-                parent.children.append(&struct_decl.named) catch {
-                    @panic("OOM");
                 };
-            }
 
-            builder.registry.insert(&struct_decl.named);
-            builder.push(&struct_decl.named);
+                if (builder.parent()) |parent| {
+                    parent.children.append(&struct_decl.named) catch {
+                        @panic("OOM");
+                    };
+                }
+
+                builder.registry.insert(&struct_decl.named);
+                builder.push(&struct_decl.named);
+            }
 
             return c.CXChildVisit_Recurse;
         },
@@ -929,9 +943,10 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_FieldDecl => {
             const field_inner = builder.analyzeType(origin, c.clang_getCursorType(cursor));
             const field = builder.allocType();
+            const allocname = builder.allocName(name);
             field.* = .{
                 .named = .{
-                    .name = builder.allocName(name),
+                    .name = allocname,
                     .parent = builder.parent(),
                     .children = std.ArrayList(*Type.Named).init(builder.gpa),
                     .cursor = cursor,
@@ -953,19 +968,27 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             const parent = builder.parent().?;
             switch (parent.tag) {
                 .@"union" => |*u| {
-                    u.fields.append(&field.named.tag.field) catch {
-                        @panic("OOM");
-                    };
+                    if (!u.fields.contains(name)) {
+                        u.fields.put(allocname, &field.named.tag.field) catch {
+                            @panic("OOM");
+                        };
+                    }
                 },
                 .@"struct" => |*s| {
-                    s.fields.append(&field.named.tag.field) catch {
-                        @panic("OOM");
-                    };
+                    if (!s.fields.contains(name)) {
+                        s.fields.put(allocname, &field.named.tag.field) catch {
+                            @panic("OOM");
+                        };
+                    }
                 },
                 else => unreachable,
             }
         },
         c.CXCursor_FunctionDecl => {
+            if (c.clang_Cursor_isFunctionInlined(cursor) > 0) {
+                return c.CXChildVisit_Continue;
+            }
+
             const result = builder.analyzeType(origin, c.clang_getCursorResultType(cursor));
             const function_decl = builder.allocType();
             function_decl.* = .{
@@ -1218,7 +1241,9 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                         .cursor = cursor,
                         .origin = origin,
                         .tag = .{
-                            .class = .{},
+                            .identifier = .{
+                                .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                            },
                         },
                     },
                 };
@@ -1229,7 +1254,6 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     };
                 }
 
-                builder.registry.insert(&class.named);
                 builder.push(&class.named);
             }
 
@@ -1285,7 +1309,11 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                                 .children = std.ArrayList(*Type.Named).init(builder.gpa),
                                 .cursor = cursor,
                                 .origin = origin,
-                                .tag = .{ .class = .{} },
+                                .tag = .{
+                                    .identifier = .{
+                                        .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                    },
+                                },
                             },
                         };
 
