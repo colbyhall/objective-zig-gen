@@ -7,7 +7,9 @@
     {
         "name": "CoreFoundation",
         "output_file": "core_foundation",
-        "remove_prefix": "CF"
+        "remove_prefix": "CF",
+
+        "dependencies": [ "CoreServices" ]
     },
     {
         "name": "IOKit",
