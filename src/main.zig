@@ -19,7 +19,12 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    const args = try ArgParser.run(allocator, &.{});
+    const args = try ArgParser.run(allocator, &.{
+        .{
+            .name = "no_render",
+            .description = "Only parse the files. Used for debugging.",
+        },
+    });
     switch (args) {
         .parsed => |result| {
             // Read in the manifest file and deserialize it.
@@ -105,6 +110,10 @@ pub fn main() !void {
                         },
                     );
                 }
+            }
+
+            if (result.options.contains("no_render")) {
+                return;
             }
 
             // Merge the results from the parsing. We have to do this because some frameworks only forward declare

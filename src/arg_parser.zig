@@ -97,12 +97,12 @@ pub const ArgParser = union(enum) {
             const name = arg[1..];
             for (options) |option| {
                 // Check to see if 'name' is this option
-                if (!std.mem.eql(u8, name, option, .name)) {
+                if (!std.mem.eql(u8, name, option.name)) {
                     continue;
                 }
 
                 if (option.param == .none) {
-                    try option_map.put(option.name, .{.none});
+                    try option_map.put(option.name, .{ .none = {} });
                     continue :outer;
                 }
 
@@ -122,14 +122,9 @@ pub const ArgParser = union(enum) {
 
                 switch (option.param) {
                     .string => {
-                        const result = try allocator.alloc(u8, param.len);
-                        std.mem.copyForward(u8, result, param);
-                        try option_map.put(
-                            option.name,
-                            .{
-                                .string = result,
-                            },
-                        );
+                        const result = try allocator.alloc(u8, param.?.len);
+                        std.mem.copyForwards(u8, result, param.?);
+                        try option_map.put(option.name, .{ .string = result });
                     },
                     else => unreachable,
                 }

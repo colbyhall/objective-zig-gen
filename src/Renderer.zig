@@ -822,22 +822,32 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                 self.render("u{}", .{num_bits});
             }
         },
+        .char => {
+            self.render("c_char", .{});
+        },
+        .bool => {
+            self.render("bool", .{});
+        },
         .float => |f| {
             const num_bits: u32 = @as(u32, f.size) * 8;
             self.render("f{}", .{num_bits});
         },
         .pointer, .block_pointer => |p| {
-            if (p.nullable > 0) {
-                self.render("?", .{});
-            }
-            self.render("*", .{});
-            if (p.@"const" > 0 or meta.activeTag(p.underlying.*) == .function_proto) {
-                self.render("const ", .{});
-            }
-            if (meta.activeTag(p.underlying.*) == .void) {
-                self.render("anyopaque", .{});
+            if (p.@"const" > 0 and meta.activeTag(p.underlying.*) == .char) {
+                self.render("[*:0]const u8", .{});
             } else {
-                self.renderTypeAsIdentifier(p.underlying);
+                if (p.nullable > 0) {
+                    self.render("?", .{});
+                }
+                self.render("*", .{});
+                if (p.@"const" > 0 or meta.activeTag(p.underlying.*) == .function_proto) {
+                    self.render("const ", .{});
+                }
+                if (meta.activeTag(p.underlying.*) == .void) {
+                    self.render("anyopaque", .{});
+                } else {
+                    self.renderTypeAsIdentifier(p.underlying);
+                }
             }
         },
         .array => |a| {

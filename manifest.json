@@ -119,7 +119,9 @@
             "CoreData",
             "CloudKit",
             "UniformTypeIdentifiers",
-            "Intents"
+            "Intents",
+            "CoreServices",
+            "Symbols"
         ]
     },
     {
@@ -169,7 +171,8 @@
             "IOSurface",
             "ApplicationServices",
             "OpenGL",
-            "Metal"
+            "Metal",
+            "AVFoundation"
         ]
     },
     {
@@ -200,7 +203,8 @@
         "output_file": "core_location",
         "remove_prefix": "CL",
         "dependencies": [
-            "Foundation"
+            "Foundation",
+            "Contacts"
         ]
     },
     {
@@ -220,7 +224,8 @@
             "Foundation",
             "CoreLocation",
             "CoreGraphics",
-            "EventKit"
+            "EventKit",
+            "UserNotifications"
         ]
     },
     {
@@ -287,6 +292,77 @@
         "remove_prefix": "CN",
         "dependencies": [
             "Foundation"
+        ]
+    },
+    {
+        "name": "UserNotifications",
+        "output_file": "user_notifications",
+        "remove_prefix": "UN",
+        "dependencies": [
+            "Foundation",
+            "Intents",
+            "CoreLocation"
+        ]
+    },
+    {
+        "name": "Symbols",
+        "output_file": "symbols",
+        "remove_prefix": "NS",
+        "dependencies": [
+            "Foundation"
+        ]
+    },
+    {
+        "name": "AVFoundation",
+        "output_file": "avfoundation",
+        "remove_prefix": "AV",
+        "dependencies": [
+            "Foundation",
+            "CoreMedia",
+            "CoreFoundation",
+            "CoreGraphics",
+            "CoreVideo",
+            "CoreImage",
+            "QuartzCore",
+            "UniformTypeIdentifiers",
+            "MediaToolbox",
+            "ImageIO"
+        ]
+    },
+    {
+        "name": "CoreMedia",
+        "output_file": "core_media",
+        "remove_prefix": "CM",
+        "dependencies": [
+            "Foundation",
+            "CoreFoundation",
+            "CoreAudioTypes",
+            "CoreVideo",
+            "CoreAudio"
+        ]
+    },
+    {
+        "name": "CoreAudioTypes",
+        "output_file": "core_audio_types",
+        "remove_prefix": "Audio"
+    },
+    {
+        "name": "CoreAudio",
+        "output_file": "core_audio",
+        "remove_prefix": "Audio",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreAudioTypes"
+        ]
+    },
+    {
+        "name": "MediaToolbox",
+        "output_file": "media_toolbox",
+        "remove_prefix": "MT",
+        "dependencies": [
+            "CoreFoundation",
+            "CoreMedia",
+            "CoreAudioTypes"
         ]
     }
 ]

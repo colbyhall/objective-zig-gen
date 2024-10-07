@@ -191,6 +191,7 @@ pub const Type = union(enum) {
     va_list,
     instancetype,
     void,
+    bool,
     objc_class,
     objc_sel,
     objc_id,
@@ -198,6 +199,7 @@ pub const Type = union(enum) {
 
     named: Named,
 
+    char,
     int: Int,
     float: Float,
     pointer: Pointer,
@@ -394,6 +396,17 @@ const Builder = struct {
     fn analyzeType(self: *@This(), origin: Type.Named.Origin, @"type": c.CXType) *Type {
         const result = self.allocType();
         switch (@"type".kind) {
+            c.CXType_Bool => {
+                result.* = .{
+                    .bool = {},
+                };
+            },
+            c.CXType_ExtVector => {
+                // TODO: Vector extension
+                result.* = .{
+                    .void = {},
+                };
+            },
             c.CXType_Void => {
                 result.* = .{
                     .void = {},
@@ -422,10 +435,7 @@ const Builder = struct {
             },
             c.CXType_SChar, c.CXType_Char_S => {
                 result.* = .{
-                    .int = .{
-                        .signed = 1,
-                        .size = 1,
-                    },
+                    .char = {},
                 };
             },
             c.CXType_UChar => {
@@ -543,7 +553,7 @@ const Builder = struct {
                 }
             },
             c.CXType_Pointer, c.CXType_ObjCObjectPointer => {
-                const @"const" = c.clang_isConstQualifiedType(@"type");
+                const @"const" = c.clang_isConstQualifiedType(c.clang_getPointeeType(@"type"));
                 const nullable = c.clang_Type_getNullability(@"type") != c.CXTypeNullability_NonNull;
                 const underlying = self.analyzeType(origin, c.clang_getPointeeType(@"type"));
                 result.* = .{
@@ -1197,13 +1207,11 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             };
             defer builder.push(&method.named);
 
-            if (builder.parent()) |parent| {
-                parent.children.append(&method.named) catch {
-                    @panic("OOM");
-                };
-            }
-
             const parent = builder.parent().?;
+            parent.children.append(&method.named) catch {
+                @panic("OOM");
+            };
+
             switch (parent.tag) {
                 .protocol => |*p| {
                     p.methods.append(&method.named.tag.method) catch {
@@ -1233,28 +1241,34 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .base_protocol = {},
                 };
             } else {
-                class.* = .{
-                    .named = .{
-                        .name = builder.allocName(name),
-                        .parent = builder.parent(),
-                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                        .cursor = cursor,
-                        .origin = origin,
-                        .tag = .{
-                            .identifier = .{
-                                .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                if (builder.parent()) |parent| {
+                    class.* = .{
+                        .named = .{
+                            .name = builder.allocName(name),
+                            .parent = builder.parent(),
+                            .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                            .cursor = cursor,
+                            .origin = origin,
+                            .tag = .{
+                                .identifier = .{
+                                    .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                },
                             },
                         },
-                    },
-                };
+                    };
 
-                if (builder.parent()) |parent| {
                     parent.children.append(&class.named) catch {
                         @panic("OOM");
                     };
-                }
 
-                builder.push(&class.named);
+                    builder.push(&class.named);
+                }
+                // Handle ObjC categories
+                else if (c.clang_getCursorKind(parent_cursor) == c.CXCursor_ObjCCategoryDecl) {
+                    const new_parent = builder.registry.lookup(.interface, name).?;
+                    new_parent.cursor = parent_cursor;
+                    builder.push(new_parent);
+                }
             }
 
             return c.CXChildVisit_Recurse;
@@ -1375,6 +1389,12 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
             const parent = builder.parent().?;
             switch (parent.tag) {
                 .interface => |*i| {
+                    for (i.type_parameters.items) |t| {
+                        if (mem.eql(u8, t, name)) {
+                            return c.CXChildVisit_Continue;
+                        }
+                    }
+
                     i.type_parameters.append(builder.allocName(name)) catch {
                         @panic("OOM");
                     };
@@ -1382,7 +1402,9 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 else => unreachable,
             }
         },
-        c.CXCursor_ObjCCategoryDecl,
+        c.CXCursor_ObjCCategoryDecl => {
+            return c.CXChildVisit_Recurse;
+        },
         c.CXCursor_AlignedAttr,
         => {
             // TODO: IMPLEMENT ME
@@ -1420,6 +1442,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_ObjCRequiresSuper,
         c.CXCursor_ObjCSubclassingRestricted,
         c.CXCursor_ObjCIndependentClass,
+        c.CXCursor_NSConsumesSelf,
         => {},
         else => {
             std.log.err(
