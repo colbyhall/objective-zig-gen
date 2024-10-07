@@ -73,7 +73,7 @@ Here is an example manifest file
 ```
 
 ## Roadmap
-- [/] Complete type mapping for all Objective-C types. (Protocols, Interfaces, Blocks)
+- [ ] **In Progress** | Complete type mapping for all Objective-C types. (Protocols, Interfaces, Blocks)
 - [ ] Zig interface for writing Objective-C ABI compatible Zig.
 - [ ] Comprehensive test and benchmarking.
 
