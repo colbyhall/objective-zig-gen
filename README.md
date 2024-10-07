@@ -15,7 +15,7 @@
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/) (latest version recommended)
+- [Zig](https://ziglang.org/) (0.13.0)
 - llvm installed through homebrew for libclang (We currently have a naive way to find libclang which is why homebrew is required)
 - A working Objective-C toolchain (Xcode on macOS)
 
@@ -73,7 +73,7 @@ Here is an example manifest file
 ```
 
 ## Roadmap
-- [ ] Complete type mapping for all Objective-C types. (Protocols, Interfaces, Blocks)
+- [ ] [IN-PROGRESS] Complete type mapping for all Objective-C types. (Protocols, Interfaces, Blocks)
 - [ ] Zig interface for writing Objective-C ABI compatible Zig.
 - [ ] Comprehensive test and benchmarking.
 
