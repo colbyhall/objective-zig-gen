@@ -14,7 +14,7 @@ const Registry = parser.Registry;
 const Type = parser.Type;
 
 gpa: Allocator,
-writer: std.fs.File.Writer,
+writer: std.io.BufferedWriter(4096, std.fs.File.Writer),
 frameworks: Manifest,
 registry: *Registry,
 
@@ -38,14 +38,14 @@ pub fn init(options: struct {
 }) @This() {
     return .{
         .gpa = options.allocator,
-        .writer = options.writer,
+        .writer = std.io.bufferedWriter(options.writer),
         .frameworks = options.manifest,
         .registry = options.registry,
     };
 }
 
 pub fn render(self: *@This(), comptime format: []const u8, args: anytype) void {
-    self.writer.print(format, args) catch {
+    self.writer.writer().print(format, args) catch {
         @panic("Failed to write to output file.");
     };
 }
@@ -342,7 +342,31 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
     }
 }
 
+fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap(void), param: *Type) void {
+    switch (param.*) {
+        .named => |n| switch (n.tag) {
+            .identifier => |i| {
+                for (i.type_parameters.items) |p| {
+                    self.gatherMethodGenericParams(out_params, p);
+                }
+            },
+            .type_param => {
+                out_params.put(n.name, {}) catch {
+                    @panic("OOM");
+                };
+            },
+            else => {},
+        },
+        else => {},
+    }
+}
+
 fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method) void {
+    var generic_params = std.StringArrayHashMap(void).init(self.gpa);
+    for (method.params.items) |p| {
+        self.gatherMethodGenericParams(&generic_params, p.type);
+    }
+
     self.render("pub fn ", .{});
     _ = self.writer.write(name) catch {
         unreachable;
@@ -354,6 +378,27 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
 
         if (method.params.items.len > 0) {
             self.render(", ", .{});
+        }
+    }
+
+    // Render the generic params first
+    {
+        const parent = method.asNamed().parent.?;
+
+        var iter = generic_params.iterator();
+        outer: while (iter.next()) |arg| {
+            // Skip the generic params that are part of the interface decl.
+            switch (parent.tag) {
+                .interface => |i| {
+                    for (i.type_parameters.items) |p| {
+                        if (generic_params.contains(p)) {
+                            continue :outer;
+                        }
+                    }
+                },
+                else => {},
+            }
+            self.render("comptime {s}: type, ", .{arg.key_ptr.*});
         }
     }
 
@@ -412,12 +457,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         .@"struct" => |s| {
             self.render("pub const ", .{});
             self.renderNamedName(named, .{ .ignore_parents = true });
-            self.render(" = extern ", .{});
-            if (s.@"packed" > 0) {
-                self.render("packed ", .{});
-            }
-            self.render("struct {{", .{});
-
+            self.render(" = extern struct {{", .{});
             self.renderChildrenDecl(named.children.items);
 
             if (s.fields.count() > 0) {
@@ -751,19 +791,19 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                         }
                     }
                     if (index == 0) {
-                        _ = self.writer.writeByte(ascii.toLower(name[0])) catch {
+                        _ = self.writer.writer().writeByte(ascii.toLower(name[0])) catch {
                             unreachable;
                         };
-                        _ = self.writer.write(name[1..]) catch {
+                        _ = self.writer.writer().write(name[1..]) catch {
                             unreachable;
                         };
                     } else {
                         for (0..index) |i| {
-                            _ = self.writer.writeByte(ascii.toLower(name[i])) catch {
+                            _ = self.writer.writer().writeByte(ascii.toLower(name[i])) catch {
                                 unreachable;
                             };
                         }
-                        _ = self.writer.write(name[index..]) catch {
+                        _ = self.writer.writer().write(name[index..]) catch {
                             unreachable;
                         };
                     }
@@ -885,12 +925,25 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                     unreachable;
                 };
             },
-            .identifier => {
+            .identifier => |i| {
                 if (self.registry.lookupElaborated(n.name)) |e| {
                     self.renderTypeAsIdentifier(e.asType());
                 } else {
                     std.log.err("Failed to find {s} in framework {s}.", .{ n.name, self.registry.owner.name });
                     self.render("anyopaque", .{});
+                }
+
+                // Print out the type parameters
+                if (i.type_parameters.items.len > 0) {
+                    self.render("(", .{});
+                    for (i.type_parameters.items, 0..) |arg, index| {
+                        self.renderTypeAsIdentifier(arg);
+
+                        if (i.type_parameters.items.len > 3 or index < i.type_parameters.items.len - 1) {
+                            self.render(", ", .{});
+                        }
+                    }
+                    self.render(")", .{});
                 }
             },
             else => {
@@ -956,4 +1009,8 @@ pub fn run(args: struct {
             }
         }
     }
+
+    self.writer.flush() catch {
+        unreachable;
+    };
 }

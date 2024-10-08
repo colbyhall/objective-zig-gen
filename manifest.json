@@ -195,7 +195,8 @@
             "CoreFoundation",
             "Foundation",
             "CloudKit",
-            "CoreSpotlight"
+            "CoreSpotlight",
+            "AppKit"
         ]
     },
     {
@@ -238,7 +239,8 @@
             "CoreFoundation",
             "QuartzCore",
             "CoreImage",
-            "Intents"
+            "Intents",
+            "CoreData"
         ]
     },
     {
@@ -283,7 +285,8 @@
             "QuartzCore",
             "CoreImage",
             "CoreGraphics",
-            "Contacts"
+            "Contacts",
+            "CoreData"
         ]
     },
     {
@@ -326,7 +329,8 @@
             "QuartzCore",
             "UniformTypeIdentifiers",
             "MediaToolbox",
-            "ImageIO"
+            "ImageIO",
+            "AVFAudio"
         ]
     },
     {
@@ -363,6 +367,43 @@
             "CoreFoundation",
             "CoreMedia",
             "CoreAudioTypes"
+        ]
+    },
+    {
+        "name": "AVFAudio",
+        "output_file": "avfaudio",
+        "remove_prefix": "AVAudio",
+        "dependencies": [
+            "Foundation",
+            "CoreAudioTypes",
+            "CoreMedia",
+            "AudioToolbox",
+            "CoreMIDI",
+            "AppKit"
+        ]
+    },
+    {
+        "name": "AudioToolbox",
+        "output_file": "audio_toolbox",
+        "remove_prefix": "Audio",
+        "dependencies": [
+            "CoreFoundation",
+            "AppKit",
+            "CoreAudioTypes",
+            "CoreMIDI",
+            "Foundation",
+            "AVFAudio",
+            "CoreServices",
+            "CoreAudio"
+        ]
+    },
+    {
+        "name": "CoreMIDI",
+        "output_file": "core_midi",
+        "remove_prefix": "MIDI",
+        "dependencies": [
+            "CoreFoundation",
+            "Foundation"
         ]
     }
 ]

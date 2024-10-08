@@ -124,7 +124,7 @@ pub const Type = union(enum) {
             }
         };
         pub const Identifier = struct {
-            type_parameters: std.ArrayList([]const u8),
+            type_parameters: std.ArrayList(*Type),
 
             pub fn asNamed(self: *@This()) *Type.Named {
                 const tag_offset = @offsetOf(Type.Named, "tag");
@@ -545,7 +545,7 @@ const Builder = struct {
                             .origin = origin,
                             .tag = .{
                                 .identifier = .{
-                                    .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                    .type_parameters = std.ArrayList(*Type).init(self.gpa),
                                 },
                             },
                         },
@@ -607,7 +607,7 @@ const Builder = struct {
                             .origin = origin,
                             .tag = .{
                                 .identifier = .{
-                                    .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                    .type_parameters = std.ArrayList(*Type).init(self.gpa),
                                 },
                             },
                         },
@@ -634,7 +634,41 @@ const Builder = struct {
                 result.* = .{ .objc_id = {} };
             },
             c.CXType_ObjCObject => {
-                result.* = .{ .void = {} };
+                const name_spelling = c.clang_getTypeSpelling(@"type");
+                var name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
+                const kindof = "__kindof ";
+                if (mem.startsWith(u8, name, kindof)) {
+                    name = name[kindof.len..];
+                }
+                if (mem.indexOf(u8, name, "<")) |i| {
+                    name = name[0..i];
+                }
+
+                var type_parameters = std.ArrayList(*Type).init(self.gpa);
+                const type_args_count = c.clang_Type_getNumObjCTypeArgs(@"type");
+                if (type_args_count > 0) {
+                    type_parameters.ensureTotalCapacity(type_args_count) catch {
+                        @panic("OOM");
+                    };
+                    for (0..type_args_count) |i| {
+                        const arg = c.clang_Type_getObjCTypeArg(@"type", @intCast(i));
+                        type_parameters.insertAssumeCapacity(i, self.analyzeType(origin, arg));
+                    }
+                }
+                result.* = .{
+                    .named = .{
+                        .name = name,
+                        .parent = null,
+                        .children = std.ArrayList(*Type.Named).init(self.gpa),
+                        .origin = origin,
+                        .cursor = c.clang_getNullCursor(),
+                        .tag = .{
+                            .identifier = .{
+                                .type_parameters = type_parameters,
+                            },
+                        },
+                    },
+                };
             },
             c.CXType_ObjCTypeParam => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
@@ -676,7 +710,7 @@ const Builder = struct {
                                 .cursor = c.clang_getNullCursor(),
                                 .tag = .{
                                     .identifier = .{
-                                        .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                                        .type_parameters = std.ArrayList(*Type).init(self.gpa),
                                     },
                                 },
                             },
@@ -1075,7 +1109,22 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .interface => |i| {
                         for (i.type_parameters.items) |param| {
                             if (mem.eql(u8, param, name)) {
-                                i.super.?.tag.identifier.type_parameters.append(builder.allocName(name)) catch {
+                                const arg = builder.allocType();
+                                arg.* = .{
+                                    .named = .{
+                                        .name = builder.allocName(name),
+                                        .parent = parent,
+                                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                                        .cursor = cursor,
+                                        .origin = origin,
+                                        .tag = .{
+                                            .identifier = .{
+                                                .type_parameters = std.ArrayList(*Type).init(builder.gpa),
+                                            },
+                                        },
+                                    },
+                                };
+                                i.super.?.tag.identifier.type_parameters.append(arg) catch {
                                     @panic("OOM");
                                 };
                                 break;
@@ -1093,7 +1142,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                                 .origin = origin,
                                 .tag = .{
                                     .identifier = .{
-                                        .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                        .type_parameters = std.ArrayList(*Type).init(builder.gpa),
                                     },
                                 },
                             },
@@ -1251,7 +1300,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                             .origin = origin,
                             .tag = .{
                                 .identifier = .{
-                                    .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                    .type_parameters = std.ArrayList(*Type).init(builder.gpa),
                                 },
                             },
                         },
@@ -1325,7 +1374,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                                 .origin = origin,
                                 .tag = .{
                                     .identifier = .{
-                                        .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                                        .type_parameters = std.ArrayList(*Type).init(builder.gpa),
                                     },
                                 },
                             },
@@ -1365,7 +1414,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .origin = origin,
                     .tag = .{
                         .identifier = .{
-                            .type_parameters = std.ArrayList([]const u8).init(builder.gpa),
+                            .type_parameters = std.ArrayList(*Type).init(builder.gpa),
                         },
                     },
                 },
