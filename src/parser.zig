@@ -116,13 +116,6 @@ pub const Type = union(enum) {
                 return @ptrFromInt(@intFromPtr(tag) - tag_offset);
             }
         };
-        pub const Class = struct {
-            pub fn asNamed(self: *@This()) *Type.Named {
-                const tag_offset = @offsetOf(Type.Named, "tag");
-                const tag: *Tag = @fieldParentPtr("class", self);
-                return @ptrFromInt(@intFromPtr(tag) - tag_offset);
-            }
-        };
         pub const Identifier = struct {
             type_parameters: std.ArrayList(*Type),
 
@@ -206,6 +199,182 @@ pub const Type = union(enum) {
     block_pointer: Pointer,
     array: Array,
     function_proto: FunctionProto,
+
+    pub fn print(self: *@This()) void {
+        switch (self.*) {
+            .va_list => {
+                std.debug.print("va_list", .{});
+            },
+            .instancetype => {
+                std.debug.print("instancetype", .{});
+            },
+            .void => {
+                std.debug.print("void", .{});
+            },
+            .bool => {
+                std.debug.print("bool", .{});
+            },
+            .objc_class => {
+                std.debug.print("objc.Class", .{});
+            },
+            .objc_sel => {
+                std.debug.print("objc.Selector", .{});
+            },
+            .objc_id => {
+                std.debug.print("objc.Id", .{});
+            },
+            .base_protocol => {
+                std.debug.print("Protocol", .{});
+            },
+            .named => |n| switch (n.tag) {
+                .typedef => |t| {
+                    std.debug.print("const {s} = ", .{n.name});
+                    t.child.?.print();
+                },
+                .field => |f| {
+                    std.debug.print("{s}: ", .{n.name});
+                    f.type.print();
+                },
+                .@"union" => |u| {
+                    std.debug.print("const {s} = union {{\n", .{n.name});
+                    var iter = u.fields.iterator();
+                    while (iter.next()) |field| {
+                        std.debug.print("    ", .{});
+                        field.value_ptr.*.asNamed().asType().print();
+                        std.debug.print(",\n", .{});
+                    }
+                    std.debug.print("}}", .{});
+                },
+                .@"struct" => |u| {
+                    std.debug.print("const {s} = struct {{\n", .{n.name});
+                    var iter = u.fields.iterator();
+                    while (iter.next()) |field| {
+                        std.debug.print("    ", .{});
+                        field.value_ptr.*.asNamed().asType().print();
+                        std.debug.print(",\n", .{});
+                    }
+                    std.debug.print("}}", .{});
+                },
+                .@"enum" => |e| {
+                    std.debug.print("const {s} = enum(", .{n.name});
+                    e.backing.print();
+                    std.debug.print(") {{\n", .{});
+                    for (e.values.items) |v| {
+                        std.debug.print("    {s} = {},\n", .{ v.name, v.value });
+                    }
+                    std.debug.print("}}", .{});
+                },
+                .param => |p| {
+                    std.debug.print("{s}: ", .{n.name});
+                    p.type.print();
+                },
+                .function => |f| {
+                    std.debug.print("fn {s}(", .{n.name});
+                    for (f.params.items) |p| {
+                        p.asNamed().asType().print();
+                    }
+                    std.debug.print(") ", .{});
+                    f.result.?.print();
+                },
+                .method => |f| {
+                    std.debug.print("fn {s}(", .{n.name});
+                    for (f.params.items) |p| {
+                        p.asNamed().asType().print();
+                    }
+                    std.debug.print(") ", .{});
+                    f.result.?.print();
+                },
+                .protocol => |p| {
+                    std.debug.print("const {s} = protocol(", .{n.name});
+                    for (p.inherits.items) |i| {
+                        i.asType().print();
+                        std.debug.print(", ", .{});
+                    }
+                    std.debug.print(") {{\n", .{});
+                    for (p.methods.items) |m| {
+                        std.debug.print("    ", .{});
+                        m.asNamed().asType().print();
+                        std.debug.print("\n", .{});
+                    }
+                    std.debug.print("}}", .{});
+                },
+                .interface => |i| {
+                    std.debug.print("const {s} = interface", .{n.name});
+                    if (i.type_parameters.items.len > 0) {
+                        std.debug.print("<", .{});
+                        for (i.type_parameters.items) |a| {
+                            std.debug.print("{s}, ", .{a});
+                        }
+                        std.debug.print(">(", .{});
+                    }
+                    std.debug.print("(super: {s}", .{i.super.?.name});
+                    if (i.protocols.items.len > 0) {
+                        std.debug.print(", protocols: ", .{});
+                        for (i.protocols.items) |p| {
+                            std.debug.print("{s}, ", .{p.name});
+                        }
+                    }
+                    std.debug.print(") {{\n", .{});
+                    for (i.methods.items) |m| {
+                        std.debug.print("    ", .{});
+                        m.asNamed().asType().print();
+                        std.debug.print("\n", .{});
+                    }
+                    std.debug.print("}}", .{});
+                },
+                .identifier => |i| {
+                    std.debug.print("{s}", .{n.name});
+                    if (i.type_parameters.items.len > 0) {
+                        std.debug.print("(", .{});
+                        for (i.type_parameters.items) |t| {
+                            t.print();
+                        }
+                        std.debug.print(")", .{});
+                    }
+                },
+                .type_param => {
+                    std.debug.print("{s}", .{n.name});
+                },
+            },
+            .char => {
+                std.debug.print("char", .{});
+            },
+            .int => |i| {
+                if (i.signed > 0) {
+                    std.debug.print("i", .{});
+                } else {
+                    std.debug.print("u", .{});
+                }
+                std.debug.print("{}", .{i.size * 8});
+            },
+            .float => |f| {
+                std.debug.print("f{}", .{f.size * 8});
+            },
+            .block_pointer, .pointer => |p| {
+                if (p.nullable > 0) {
+                    std.debug.print("?", .{});
+                }
+                std.debug.print("*", .{});
+                if (p.@"const" > 0) {
+                    std.debug.print("const ", .{});
+                }
+                p.underlying.print();
+            },
+            .array => |a| {
+                std.debug.print("[{}]", .{a.length});
+                a.element.print();
+            },
+            .function_proto => |f| {
+                std.debug.print("fn(", .{});
+                for (f.params) |p| {
+                    p.print();
+                    std.debug.print(", ", .{});
+                }
+                std.debug.print(") ", .{});
+                f.result.print();
+            },
+        }
+    }
 };
 
 pub const Registry = struct {
@@ -693,29 +862,25 @@ const Builder = struct {
             c.CXType_ObjCInterface => {
                 const name_spelling = c.clang_getTypeSpelling(@"type");
                 const name = self.allocName(mem.sliceTo(c.clang_getCString(name_spelling), 0));
-                if (self.registry.lookupElaborated(name)) |u| {
-                    return u.asType();
+                if (mem.eql(u8, name, "Protocol")) {
+                    result.* = .{
+                        .base_protocol = {},
+                    };
                 } else {
-                    if (mem.eql(u8, name, "Protocol")) {
-                        result.* = .{
-                            .base_protocol = {},
-                        };
-                    } else {
-                        result.* = .{
-                            .named = .{
-                                .name = name,
-                                .parent = null,
-                                .children = std.ArrayList(*Type.Named).init(self.gpa),
-                                .origin = origin,
-                                .cursor = c.clang_getNullCursor(),
-                                .tag = .{
-                                    .identifier = .{
-                                        .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                    },
+                    result.* = .{
+                        .named = .{
+                            .name = name,
+                            .parent = null,
+                            .children = std.ArrayList(*Type.Named).init(self.gpa),
+                            .origin = origin,
+                            .cursor = c.clang_getNullCursor(),
+                            .tag = .{
+                                .identifier = .{
+                                    .type_parameters = std.ArrayList(*Type).init(self.gpa),
                                 },
                             },
-                        };
-                    }
+                        },
+                    };
                 }
             },
             else => {
@@ -1109,22 +1274,7 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                     .interface => |i| {
                         for (i.type_parameters.items) |param| {
                             if (mem.eql(u8, param, name)) {
-                                const arg = builder.allocType();
-                                arg.* = .{
-                                    .named = .{
-                                        .name = builder.allocName(name),
-                                        .parent = parent,
-                                        .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                                        .cursor = cursor,
-                                        .origin = origin,
-                                        .tag = .{
-                                            .identifier = .{
-                                                .type_parameters = std.ArrayList(*Type).init(builder.gpa),
-                                            },
-                                        },
-                                    },
-                                };
-                                i.super.?.tag.identifier.type_parameters.append(arg) catch {
+                                i.super.?.tag.identifier.type_parameters.append(builder.analyzeType(origin, c.clang_getCursorType(cursor))) catch {
                                     @panic("OOM");
                                 };
                                 break;
@@ -1356,36 +1506,32 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
         c.CXCursor_ObjCProtocolRef => {
             if (builder.parent()) |parent| {
                 var super: *Type.Named = undefined;
-                if (builder.registry.protocols.get(name)) |s| {
-                    super = s;
+                const ref = builder.allocType();
+                if (mem.eql(u8, name, "Protocol")) {
+                    ref.* = .{
+                        .base_protocol = {},
+                    };
                 } else {
-                    const ref = builder.allocType();
-                    if (mem.eql(u8, name, "Protocol")) {
-                        ref.* = .{
-                            .base_protocol = {},
-                        };
-                    } else {
-                        ref.* = .{
-                            .named = .{
-                                .name = builder.allocName(name),
-                                .parent = builder.parent(),
-                                .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                                .cursor = cursor,
-                                .origin = origin,
-                                .tag = .{
-                                    .identifier = .{
-                                        .type_parameters = std.ArrayList(*Type).init(builder.gpa),
-                                    },
+                    ref.* = .{
+                        .named = .{
+                            .name = builder.allocName(name),
+                            .parent = builder.parent(),
+                            .children = std.ArrayList(*Type.Named).init(builder.gpa),
+                            .cursor = cursor,
+                            .origin = origin,
+                            .tag = .{
+                                .identifier = .{
+                                    .type_parameters = std.ArrayList(*Type).init(builder.gpa),
                                 },
                             },
-                        };
+                        },
+                    };
 
-                        parent.children.append(&ref.named) catch {
-                            @panic("OOM");
-                        };
-                    }
-                    super = &ref.named;
+                    parent.children.append(&ref.named) catch {
+                        @panic("OOM");
+                    };
                 }
+                super = &ref.named;
 
                 switch (parent.tag) {
                     .protocol => |*i| {
@@ -1398,32 +1544,33 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                             @panic("OOM");
                         };
                     },
-                    else => {},
+                    else => {
+                        // std.debug.print("Parent is ", .{});
+                        // parent.asType().print();
+                        // std.debug.print("\n", .{});
+                    },
                 }
             }
         },
         c.CXCursor_ObjCIvarDecl => {},
         c.CXCursor_ObjCSuperClassRef => {
-            const super = builder.allocType();
-            super.* = .{
-                .named = .{
-                    .name = builder.allocName(name),
-                    .parent = builder.parent(),
-                    .children = std.ArrayList(*Type.Named).init(builder.gpa),
-                    .cursor = cursor,
-                    .origin = origin,
-                    .tag = .{
-                        .identifier = .{
-                            .type_parameters = std.ArrayList(*Type).init(builder.gpa),
-                        },
-                    },
-                },
-            };
+            const super = builder.analyzeType(origin, c.clang_getCursorType(cursor));
 
             if (builder.parent()) |parent| {
                 parent.children.append(&super.named) catch {
                     @panic("OOM");
                 };
+            }
+
+            switch (super.named.tag) {
+                .identifier => |i| {
+                    if (i.type_parameters.items.len > 0) {
+                        std.debug.print("Super -> ", .{});
+                        super.print();
+                        std.debug.print("\n", .{});
+                    }
+                },
+                else => {},
             }
 
             const parent = builder.parent().?;
@@ -1433,6 +1580,8 @@ fn visitor(cursor: c.CXCursor, parent_cursor: c.CXCursor, client_data: c.CXClien
                 },
                 else => unreachable,
             }
+
+            return c.CXChildVisit_Recurse;
         },
         c.CXCursor_TemplateTypeParameter => {
             const parent = builder.parent().?;

@@ -437,6 +437,8 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
 fn renderChildrenDecl(self: *@This(), children: []const *Type.Named) void {
     var rendered = std.StringHashMap(void).init(self.gpa);
     for (children) |c| {
+        if (meta.activeTag(c.origin) == .runtime) continue;
+
         switch (c.tag) {
             .@"struct", .@"union", .@"enum", .interface, .protocol, .typedef => {
                 if (!rendered.contains(c.name)) {
@@ -650,6 +652,8 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                 .{named.name},
             );
             if (i.super) |super| {
+                // super.asType().print();
+                // std.debug.print("\n", .{});
                 self.renderTypeAsIdentifier(super.asType());
             } else {
                 self.render("objc.NSObject", .{});
