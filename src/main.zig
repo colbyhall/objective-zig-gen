@@ -4,36 +4,60 @@ const Allocator = mem.Allocator;
 const Progress = std.Progress;
 const fs = std.fs;
 
+const builtin = @import("builtin");
+
 const root = @import("root.zig");
 const Framework = root.Framework;
 const Manifest = root.Manifest;
 const Renderer = @import("Renderer.zig");
 
-const parser = @import("parser.zig");
-const Registry = parser.Registry;
-const Type = parser.Type;
+const Parser = @import("Parser.zig");
+const Registry = Parser.Registry;
+const Type = Parser.Type;
 
 const ArgParser = @import("arg_parser.zig").ArgParser;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+    const gpa = gpa_allocator.allocator();
 
-    const args = try ArgParser.run(allocator, &.{
-        .{
-            .name = "no_render",
-            .description = "Only parse the files. Used for debugging.",
+    // Parse the commandline arguments to gather how we should execute the generator
+    const args = try ArgParser.run(
+        gpa,
+        &.{
+            .{
+                .name = "no_render",
+                .alias = "nr",
+                .description = "Only parse the files. Used for debugging.",
+            },
+            .{
+                .name = "output",
+                .alias = "o",
+                .description = "Sets the output directory of the generated files.",
+                .param = .string,
+            },
+            .{
+                .name = "no_fmt",
+                .alias = "nf",
+                .description = "Prevents zig fmt from running on the generated output.",
+            },
+            .{
+                .name = "single_threaded",
+                .alias = "st",
+                .description = "Parses and renders frameworks serially as given in the framework. Typically used for debugging.",
+            },
         },
-    });
+    );
     switch (args) {
         .parsed => |result| {
             // Read in the manifest file and deserialize it.
             const possible_frameworks = try root.parseJsonWithCustomErrorHandling(
                 []const Framework,
-                allocator,
+                gpa,
                 result.path,
             );
             if (possible_frameworks == null) {
+                std.log.err("Found no frameworks in manifest '{s}'.", .{result.path});
                 return;
             }
 
@@ -46,7 +70,7 @@ pub fn main() !void {
             }
 
             // Convert the parsed manifest into a map
-            var manifest = Manifest.init(allocator);
+            var manifest = Manifest.init(gpa);
             defer manifest.deinit();
             for (frameworks.value) |*framework| {
                 try manifest.put(framework.name, framework);
@@ -63,55 +87,78 @@ pub fn main() !void {
             }
 
             // Acquire the absolute path to the xcode sdk
-            const sdk_path = try root.acquireSDKPath(allocator);
-            defer allocator.free(sdk_path);
+            const sdk_path = try root.acquireSDKPath(gpa);
+            defer gpa.free(sdk_path);
 
             // Generate a path to the frameworks directory
             const frameworks_path = try fs.path.join(
-                allocator,
+                gpa,
                 &.{
                     sdk_path,
                     "System/Library/Frameworks/",
                 },
             );
-            defer allocator.free(frameworks_path);
+            defer gpa.free(frameworks_path);
 
-            // Start the thread pool now that we know we have work to do
+            // Start the thread pool if the program is not in single threaded mode. We wait to do this
+            // now as we know there is work to do.
             var pool: std.Thread.Pool = undefined;
-            try pool.init(.{ .allocator = allocator });
-            defer pool.deinit();
+            const single_threaded = result.options.contains("single_threaded") or builtin.single_threaded;
+            if (!single_threaded) {
+                try pool.init(.{ .allocator = gpa });
+            }
+            defer if (!single_threaded) {
+                pool.deinit();
+            };
 
             // This progress is for the runtime of the program. Its children are parsing and then analyzing.
             const base_progress = Progress.start(.{ .estimated_total_items = 2 });
             defer base_progress.end();
 
             // Parse the frameworks listed in the manifest. Parse each framework on its own thread.
-            const results = try allocator.alloc(Registry, frameworks.value.len);
+            const results = try gpa.alloc(Registry, frameworks.value.len);
             {
                 const parse_progress = base_progress.start("Parsing Frameworks", frameworks.value.len);
                 defer parse_progress.end();
 
-                var parse_framework_work = std.Thread.WaitGroup{};
-                defer pool.waitAndWork(&parse_framework_work);
-
-                for (frameworks.value, 0..) |*framework, index| {
-                    pool.spawnWg(
-                        &parse_framework_work,
-                        parser.parse,
-                        .{
+                // If single threaded parse the frameworks as given in the manifest serially.
+                if (single_threaded) {
+                    for (frameworks.value, 0..) |*framework, index| {
+                        Parser.parse(.{
+                            .gpa = gpa,
+                            .arena = gpa,
+                            .sdk_path = sdk_path,
+                            .framework = framework,
+                            .result = &results[index],
+                            .progress = parse_progress,
+                        });
+                    }
+                }
+                // If multi threaded, parse the frameworks in any given order asynchronously and wait for the
+                // work to be completed on this thread.
+                else {
+                    var parse_framework_work = std.Thread.WaitGroup{};
+                    defer pool.waitAndWork(&parse_framework_work);
+                    for (frameworks.value, 0..) |*framework, index| {
+                        pool.spawnWg(
+                            &parse_framework_work,
+                            Parser.parse,
                             .{
-                                .gpa = allocator,
-                                .arena = allocator,
-                                .sdk_path = sdk_path,
-                                .framework = framework,
-                                .result = &results[index],
-                                .progress = parse_progress,
+                                .{
+                                    .gpa = gpa,
+                                    .arena = gpa,
+                                    .sdk_path = sdk_path,
+                                    .framework = framework,
+                                    .result = &results[index],
+                                    .progress = parse_progress,
+                                },
                             },
-                        },
-                    );
+                        );
+                    }
                 }
             }
 
+            // If the no_render option is enabled stop executing here.
             if (result.options.contains("no_render")) {
                 return;
             }
@@ -187,8 +234,11 @@ pub fn main() !void {
                 }
             }
 
-            // TODO: Add the ability to change the output directory as a command line argument.
-            const output_path = "output";
+            // Gather the output path from the arg parser results.
+            var output_path: []const u8 = "output";
+            if (result.options.get("output")) |value| {
+                output_path = value.string;
+            }
 
             // Try to create the output directory. Ignore any error about the directory already existing.
             fs.cwd().makeDir(output_path) catch |err| {
@@ -197,6 +247,7 @@ pub fn main() !void {
                 }
             };
 
+            // Open the output directory to be passed to the render jobs. Every framework creates the file they render out to in their job.
             var output = try fs.cwd().openDir(output_path, .{});
             defer output.close();
 
@@ -207,24 +258,38 @@ pub fn main() !void {
                 _ = try objc_file.write(@embedFile("objc.zig"));
             }
 
-            // Render every framework we have results for. Each rendering job happens in its own thread.
             {
                 const render_progress = base_progress.start("Rendering Frameworks", frameworks.value.len);
                 defer render_progress.end();
 
-                var render_framework_work = std.Thread.WaitGroup{};
-                defer pool.waitAndWork(&render_framework_work);
-
-                for (results) |*r| {
-                    pool.spawnWg(&render_framework_work, Renderer.run, .{
-                        .{
-                            .allocator = allocator,
+                // If single threaded, render frameworks serially in order as provided in the manifest.
+                if (single_threaded) {
+                    for (results) |*r| {
+                        Renderer.run(.{
+                            .allocator = gpa,
                             .output = output,
                             .manifest = manifest,
                             .registry = r,
                             .progress = render_progress,
-                        },
-                    });
+                        });
+                    }
+                }
+                // If multi threaded, render frameworks in any order asychronously and wait for the jobs
+                // to complete on this thread.
+                else {
+                    var render_framework_work = std.Thread.WaitGroup{};
+                    defer pool.waitAndWork(&render_framework_work);
+                    for (results) |*r| {
+                        pool.spawnWg(&render_framework_work, Renderer.run, .{
+                            .{
+                                .allocator = gpa,
+                                .output = output,
+                                .manifest = manifest,
+                                .registry = r,
+                                .progress = render_progress,
+                            },
+                        });
+                    }
                 }
             }
 
@@ -245,9 +310,14 @@ pub fn main() !void {
                 }
             }
 
-            // Run the zig fmt on the output path so everything aligns with the zig coding standards.
+            // If the user has specified no fmt to run then halt.
+            if (result.options.contains("no_fmt")) {
+                return;
+            }
+
+            // Run the zig fmt on the output path so everything aligns with the zig coding style.
             _ = try std.process.Child.run(.{
-                .allocator = allocator,
+                .allocator = gpa,
                 .argv = &.{
                     "zig",
                     "fmt",
@@ -255,7 +325,7 @@ pub fn main() !void {
                 },
             });
         },
+        // Print help or error messages straight to stderr and then return.
         .help, .@"error" => |msg| std.debug.print("{s}", .{msg}),
-        .exit => {},
     }
 }

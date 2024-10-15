@@ -13,6 +13,7 @@ pub const ArgParser = union(enum) {
 
         name: []const u8,
         description: []const u8,
+        alias: ?[]const u8 = null,
         param: Param = .none,
     };
     pub const Parsed = struct {
@@ -23,9 +24,8 @@ pub const ArgParser = union(enum) {
     parsed: Parsed,
     help: []const u8,
     @"error": []const u8,
-    exit,
 
-    pub fn run(allocator: Allocator, comptime options: []const Option) !Self {
+    pub fn run(gpa: Allocator, comptime options: []const Option) !Self {
         var args = std.process.args();
         defer args.deinit();
         var cwd = std.fs.cwd();
@@ -33,7 +33,7 @@ pub const ArgParser = union(enum) {
         std.debug.assert(args.skip()); // Skip past the executable in the argument
 
         var file: []const u8 = undefined;
-        var option_map = std.StringHashMap(Option.ParamValue).init(allocator);
+        var option_map = std.StringHashMap(Option.ParamValue).init(gpa);
 
         var index: i32 = 1;
         outer: while (args.next()) |arg| {
@@ -42,8 +42,22 @@ pub const ArgParser = union(enum) {
             // The help option or the spec json file must be the first argument
             if (index == 1) {
                 if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "-help")) {
+                    var help_buffer = std.ArrayList(u8).init(gpa);
+                    const writer = help_buffer.writer();
+
+                    try writer.print("objective-zig-gen [-h | -help] <path/to/manifest.json> [<options>]\n\n", .{});
+                    try writer.print("Options:\n\n", .{});
+                    for (options) |o| {
+                        const name = if (o.alias) |alias|
+                            try std.fmt.allocPrint(gpa, "{s} | {s}", .{ o.name, alias })
+                        else
+                            try std.fmt.allocPrint(gpa, "{s}", .{o.name});
+
+                        try writer.print("   {s: <26}   {s}\n", .{ name, o.description });
+                    }
+
                     return .{
-                        .help = "TODO",
+                        .help = try help_buffer.toOwnedSlice(),
                     };
                 }
 
@@ -58,21 +72,21 @@ pub const ArgParser = union(enum) {
                     std.fs.accessAbsolute(arg, .{}) catch |err| {
                         return .{
                             .@"error" = try std.fmt.allocPrint(
-                                allocator,
+                                gpa,
                                 "Failed to access file at path \'{s}\' due to {s}.\n",
                                 .{ arg, @errorName(err) },
                             ),
                         };
                     };
 
-                    const new_path = try allocator.alloc(u8, arg.len);
+                    const new_path = try gpa.alloc(u8, arg.len);
                     std.mem.copyForwards(u8, new_path, arg);
                     file = new_path;
                 } else {
-                    file = cwd.realpathAlloc(allocator, arg) catch |err| {
+                    file = cwd.realpathAlloc(gpa, arg) catch |err| {
                         return .{
                             .@"error" = try std.fmt.allocPrint(
-                                allocator,
+                                gpa,
                                 "Failed to access file at path \'{s}\' due to {s}.\n",
                                 .{ arg, @errorName(err) },
                             ),
@@ -86,7 +100,7 @@ pub const ArgParser = union(enum) {
             if (!std.mem.startsWith(u8, arg, "-")) {
                 return .{
                     .@"error" = try std.fmt.allocPrint(
-                        allocator,
+                        gpa,
                         "Argument does not start with '-'. See -h for usage.\n",
                         .{},
                     ),
@@ -97,16 +111,24 @@ pub const ArgParser = union(enum) {
             const name = arg[1..];
             for (options) |option| {
                 // Check to see if 'name' is this option
-                if (!std.mem.eql(u8, name, option.name)) {
-                    continue;
+                const name_is_name = std.mem.eql(u8, name, option.name);
+                if (option.alias) |alias| {
+                    if (!name_is_name and !std.mem.eql(u8, name, alias)) {
+                        continue;
+                    }
+                } else {
+                    if (!name_is_name) {
+                        continue;
+                    }
                 }
 
+                // If we have no param then insert the arg into the option_map
                 if (option.param == .none) {
                     try option_map.put(option.name, .{ .none = {} });
                     continue :outer;
                 }
 
-                // Peek ahead to see if there is a possible param being passed to this argument.
+                // If we allow a param peek ahead to see if there is a possible param being passed to this argument.
                 var peek_args = args;
                 var param = peek_args.next();
                 if (param) |p| {
@@ -122,7 +144,7 @@ pub const ArgParser = union(enum) {
 
                 switch (option.param) {
                     .string => {
-                        const result = try allocator.alloc(u8, param.?.len);
+                        const result = try gpa.alloc(u8, param.?.len);
                         std.mem.copyForwards(u8, result, param.?);
                         try option_map.put(option.name, .{ .string = result });
                     },
@@ -132,7 +154,7 @@ pub const ArgParser = union(enum) {
 
             return .{
                 .@"error" = try std.fmt.allocPrint(
-                    allocator,
+                    gpa,
                     "Unknown command '{s}'. See usage using -h.\n",
                     .{name},
                 ),

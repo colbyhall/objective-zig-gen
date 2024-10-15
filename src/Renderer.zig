@@ -9,9 +9,9 @@ const meta = std.meta;
 const root = @import("root.zig");
 const Manifest = root.Manifest;
 
-const parser = @import("parser.zig");
-const Registry = parser.Registry;
-const Type = parser.Type;
+const Parser = @import("Parser.zig");
+const Registry = Parser.Registry;
+const Type = Parser.Type;
 
 gpa: Allocator,
 writer: std.io.BufferedWriter(4096, std.fs.File.Writer),
@@ -50,7 +50,7 @@ pub fn render(self: *@This(), comptime format: []const u8, args: anytype) void {
     };
 }
 
-pub fn renderFrameworkDecl(self: *@This(), named: *Type.Named) bool {
+pub fn renderFrameworkDecl(self: *@This(), named: *Type.Decleration) bool {
     switch (named.origin) {
         .framework => |f| if (mem.eql(u8, f, self.registry.owner.name)) {
             return self.renderNamedDecl(named);
@@ -122,7 +122,7 @@ fn generateFunctionName(self: *@This(), in_name: []const u8) []const u8 {
     }
 }
 
-fn renderNamedName(self: *@This(), named: *Type.Named, options: struct {
+fn renderNamedName(self: *@This(), named: *Type.Decleration, options: struct {
     ignore_framework: bool = false,
     ignore_parents: bool = false,
 }) void {
@@ -191,7 +191,7 @@ fn renderNamedName(self: *@This(), named: *Type.Named, options: struct {
                 }
 
                 if (!options.ignore_parents) {
-                    var hierarchy = std.ArrayList(*Type.Named).init(self.gpa);
+                    var hierarchy = std.ArrayList(*Type.Decleration).init(self.gpa);
                     var root_type = named;
                     while (root_type.parent != null) {
                         hierarchy.insert(0, root_type.parent.?) catch {
@@ -231,7 +231,7 @@ const MethodCache = struct {
     rendered: std.StringHashMap([]const u8),
 };
 
-fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
+fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) void {
     switch (named.tag) {
         .protocol => |p| {
             for (p.inherits.items) |super| {
@@ -344,7 +344,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Named) void {
 
 fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap(void), param: *Type) void {
     switch (param.*) {
-        .named => |n| switch (n.tag) {
+        .decleration => |n| switch (n.tag) {
             .identifier => |i| {
                 for (i.type_parameters.items) |p| {
                     self.gatherMethodGenericParams(out_params, p);
@@ -361,7 +361,7 @@ fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap
     }
 }
 
-fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method) void {
+fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Decleration.Method) void {
     var generic_params = std.StringArrayHashMap(void).init(self.gpa);
     for (method.params.items) |p| {
         self.gatherMethodGenericParams(&generic_params, p.type);
@@ -434,7 +434,7 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Named.Method
     self.render("}});\n    }}\n", .{});
 }
 
-fn renderChildrenDecl(self: *@This(), children: []const *Type.Named) void {
+fn renderChildrenDecl(self: *@This(), children: []const *Type.Decleration) void {
     var rendered = std.StringHashMap(void).init(self.gpa);
     for (children) |c| {
         if (meta.activeTag(c.origin) == .runtime) continue;
@@ -454,7 +454,7 @@ fn renderChildrenDecl(self: *@This(), children: []const *Type.Named) void {
     }
 }
 
-fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
+fn renderNamedDecl(self: *@This(), named: *Type.Decleration) bool {
     switch (named.tag) {
         .@"struct" => |s| {
             self.render("pub const ", .{});
@@ -549,7 +549,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
         .typedef => |t| {
             // Skip C types that have typedefs to add them to the C global namespace.
             switch (t.child.?.*) {
-                .named => |n| {
+                .decleration => |n| {
                     if (mem.eql(u8, n.name, named.name)) {
                         return false;
                     }
@@ -579,7 +579,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
             );
 
             for (p.inherits.items, 0..) |n, index| {
-                self.renderNamedName(n, .{ .ignore_parents = true });
+                self.renderTypeAsIdentifier(n.asType());
 
                 if (index < p.inherits.items.len - 1) {
                     self.render(", ", .{});
@@ -651,13 +651,16 @@ fn renderNamedDecl(self: *@This(), named: *Type.Named) bool {
                 "    pub const Internal = objc.ExternClass(\"{s}\", @This(), ",
                 .{named.name},
             );
+
             if (i.super) |super| {
-                // super.asType().print();
-                // std.debug.print("\n", .{});
-                self.renderTypeAsIdentifier(super.asType());
+                switch (super.origin) {
+                    .runtime => self.render("objc.NSObject", .{}),
+                    else => self.renderTypeAsIdentifier(super.asType()),
+                }
             } else {
                 self.render("objc.NSObject", .{});
             }
+
             self.render(", &.{{", .{});
             for (i.protocols.items, 0..) |inh, index| {
                 self.renderTypeAsIdentifier(inh.asType());
@@ -837,7 +840,7 @@ fn renderNameAvoidKeywords(self: *@This(), name: []const u8) void {
     self.render("{s}", .{result});
 }
 
-fn renderFieldDecls(self: *@This(), fields: std.StringArrayHashMap(*Type.Named.Field)) void {
+fn renderFieldDecls(self: *@This(), fields: std.StringArrayHashMap(*Type.Decleration.Field)) void {
     var iter = fields.iterator();
     while (iter.next()) |pair| {
         const f = pair.value_ptr.*;
@@ -845,7 +848,7 @@ fn renderFieldDecls(self: *@This(), fields: std.StringArrayHashMap(*Type.Named.F
         self.render("    ", .{});
         self.renderNameAvoidKeywords(pair.key_ptr.*);
         self.render(": ", .{});
-        self.renderTypeAsIdentifier(f.type);
+        self.renderTypeAsIdentifier(f.type.?);
         self.render(",\n", .{});
     }
 }
@@ -909,7 +912,7 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
             self.render(") callconv(.C) ", .{});
             self.renderTypeAsIdentifier(f.result);
         },
-        .named => |*n| switch (n.tag) {
+        .decleration => |*n| switch (n.tag) {
             .function => {
                 var name = n.name;
 
