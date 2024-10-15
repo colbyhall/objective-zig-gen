@@ -186,6 +186,10 @@ fn renderNamedName(self: *@This(), named: *Type.Decleration, options: struct {
                         }
                     }
                 }
+                if (result.len > 0 and ascii.isDigit(result[0])) {
+                    result = named.name;
+                }
+
                 if (!options.ignore_framework and framework != self.registry.owner) {
                     self.render("{s}.", .{framework.output_file});
                 }
@@ -277,22 +281,9 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                 self.render("\n", .{});
             }
         },
-        .interface => |i| {
-            if (i.super) |super| {
-                var s = super;
-                switch (super.tag) {
-                    .identifier => {
-                        s = self.registry.lookup(.interface, super.name).?;
-                    },
-                    .interface => {},
-                    else => {
-                        unreachable;
-                    },
-                }
-
-                self.renderMethods(cache, s);
-            }
-
+        .interface => |*i| {
+            // Include protocol methods because can't include generic type params. SuperClass generic info is erased
+            // which makes it impossible to include super methods. The user can still get the super.
             for (i.protocols.items) |super| {
                 var s = super;
                 switch (super.tag) {
@@ -336,9 +327,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                 self.render("\n", .{});
             }
         },
-        else => {
-            unreachable;
-        },
+        else => unreachable,
     }
 }
 

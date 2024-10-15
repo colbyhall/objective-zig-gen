@@ -232,14 +232,14 @@ pub const Type = union(enum) {
             .base_protocol => {
                 std.debug.print("Protocol", .{});
             },
-            .decl => |n| switch (n.tag) {
+            .decleration => |n| switch (n.tag) {
                 .typedef => |t| {
                     std.debug.print("const {s} = ", .{n.name});
                     t.child.?.print();
                 },
                 .field => |f| {
                     std.debug.print("{s}: ", .{n.name});
-                    f.type.print();
+                    f.type.?.print();
                 },
                 .@"union" => |u| {
                     std.debug.print("const {s} = union {{\n", .{n.name});
@@ -1647,9 +1647,6 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .interface => |*i| i.super = &super.decleration,
                 else => try logUnhandledParentTag(name, "CXCursor_ObjCSuperClassRef", parent),
             }
-
-            // TODO: Trying to figure out how SuperClassRef does type params
-            return c.CXChildVisit_Recurse;
         },
         // Template type parameter for interface decleration
         c.CXCursor_TemplateTypeParameter => {
@@ -1758,4 +1755,21 @@ fn visitorOuter(
 fn logUnhandledParentTag(name: []const u8, comptime kind: []const u8, parent: *Type.Decleration) Error!void {
     std.log.err("For {s} of {s}, unhandled parent {s} of {}", .{ name, kind, parent.name, meta.activeTag(parent.tag) });
     return error.UnhandledBranch;
+}
+
+fn logCursorLocation(cursor: c.CXCursor) void {
+    const location = c.clang_getCursorLocation(cursor);
+    var file: c.CXFile = undefined;
+    var line: c_uint = undefined;
+    var column: c_uint = undefined;
+    c.clang_getFileLocation(location, &file, &line, &column, null);
+
+    if (file != null) {
+        const file_name = c.clang_getFileName(file);
+        defer c.clang_disposeString(file_name);
+
+        std.debug.print("Cursor location. File: {s}, Line: {}, Column: {}\n", .{ c.clang_getCString(file_name), line, column });
+    } else {
+        std.debug.print("Cursor location could not be retrieved.\n", .{});
+    }
 }
