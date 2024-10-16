@@ -655,7 +655,7 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                 },
             };
         },
-        c.CXType_Elaborated => {
+        c.CXType_Record, c.CXType_Elaborated => {
             const underlying = c.clang_Type_getNamedType(@"type");
             const underlying_name = c.clang_getTypeSpelling(underlying);
             defer c.clang_disposeString(underlying_name);
@@ -1327,24 +1327,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                             }
                         }
                     },
-                    .field => |*f| {
-                        const inner = try self.allocType();
-                        inner.* = .{
-                            .decleration = .{
-                                .name = try self.dupeString(name),
-                                .parent = parent,
-                                .children = std.ArrayList(*Type.Decleration).init(self.gpa),
-                                .cursor = cursor,
-                                .origin = origin,
-                                .tag = .{
-                                    .identifier = .{
-                                        .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                    },
-                                },
-                            },
-                        };
-                        f.type = inner;
-                    },
+                    .field => {},
                     .typedef => |*t| {
                         const inner = try self.allocType();
                         inner.* = .{
