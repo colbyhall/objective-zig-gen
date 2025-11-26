@@ -60,11 +60,12 @@ pub fn parseJsonWithCustomErrorHandling(
 
         // We're going to write out multiple lines of input over multiple lines of code so go ahead
         // and lock stderr and print out to it manually as std.debug.print locks internally.
-        std.Progress.lockStdErr();
-        defer std.Progress.unlockStdErr();
-        const stderr = std.io.getStdErr();
+        // const stderr = fs.File.
+        var buffer: [64]u8 = undefined;
+        const stderr = std.Progress.lockStderrWriter(&buffer);
+        defer std.Progress.unlockStderrWriter();
 
-        try stderr.writer().print(
+        try stderr.print(
             "Failed to parse json file '{s}' into '{s}'.\nError at line {} column {}.\n\n",
             .{
                 path,
@@ -83,14 +84,14 @@ pub fn parseJsonWithCustomErrorHandling(
         var line_number = diagnostics.getLine() - previous_newline_count;
 
         while (line_number < diagnostics.getLine() + lines_below_error_to_show) {
-            try stderr.writer().print("   {: >7} {s}\n", .{ line_number, line });
+            try stderr.print("   {: >7} {s}\n", .{ line_number, line });
 
             if (line_number == diagnostics.getLine()) {
                 const padding = 10;
                 for (0..padding + diagnostics.getColumn()) |_| {
-                    try stderr.writer().print("-", .{});
+                    try stderr.print("-", .{});
                 }
-                try stderr.writer().print("^ {s}\n", .{@errorName(err)});
+                try stderr.print("^ {s}\n", .{@errorName(err)});
             }
 
             // If the next_newline is null then its the EOF and we need to quit
@@ -112,7 +113,8 @@ pub fn parseJsonWithCustomErrorHandling(
             }
         }
 
-        try stderr.writer().print("\n", .{});
+        try stderr.print("\n", .{});
+        try stderr.flush();
 
         return null;
     };
@@ -132,5 +134,10 @@ pub fn acquireSDKPath(allocator: Allocator) ![:0]const u8 {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return try fmt.allocPrintZ(allocator, "{s}", .{result.stdout[0 .. result.stdout.len - 1]});
+    return try fmt.allocPrintSentinel(
+        allocator,
+        "{s}",
+        .{result.stdout[0 .. result.stdout.len - 1]},
+        0,
+    );
 }

@@ -2,9 +2,15 @@ const Parser = @This();
 
 const std = @import("std");
 const meta = std.meta;
+
 const mem = std.mem;
 const Allocator = mem.Allocator;
+
 const fmt = std.fmt;
+
+const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMapUnmanaged;
+const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
 
 const c = @cImport(
     @cInclude("clang-c/Index.h"),
@@ -33,7 +39,7 @@ pub const Type = union(enum) {
             }
         };
         pub const Union = struct {
-            fields: std.StringArrayHashMap(*Field),
+            fields: StringArrayHashMap(*Field),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -43,7 +49,7 @@ pub const Type = union(enum) {
         };
         pub const Struct = struct {
             @"packed": u1 = 0,
-            fields: std.StringArrayHashMap(*Field),
+            fields: StringArrayHashMap(*Field),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -57,7 +63,7 @@ pub const Type = union(enum) {
                 value: i64,
             };
             backing: *Type,
-            values: std.ArrayList(Value),
+            values: ArrayList(Value),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -76,7 +82,7 @@ pub const Type = union(enum) {
         };
         pub const Function = struct {
             result: ?*Type,
-            params: std.ArrayList(*Param),
+            params: ArrayList(*Param),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -86,7 +92,7 @@ pub const Type = union(enum) {
         };
         pub const Method = struct {
             result: ?*Type,
-            params: std.ArrayList(*Param),
+            params: ArrayList(*Param),
             kind: enum { instance, class },
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
@@ -96,8 +102,8 @@ pub const Type = union(enum) {
             }
         };
         pub const Protocol = struct {
-            inherits: std.ArrayList(*Decleration),
-            methods: std.ArrayList(*Method),
+            inherits: ArrayList(*Decleration),
+            methods: ArrayList(*Method),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -106,11 +112,11 @@ pub const Type = union(enum) {
             }
         };
         pub const Interface = struct {
-            type_parameters: std.ArrayList([]const u8),
+            type_parameters: ArrayList([]const u8),
 
             super: ?*Decleration,
-            protocols: std.ArrayList(*Decleration),
-            methods: std.ArrayList(*Method),
+            protocols: ArrayList(*Decleration),
+            methods: ArrayList(*Method),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -120,7 +126,7 @@ pub const Type = union(enum) {
         };
         // TODO: Move this out of named.
         pub const Identifier = struct {
-            type_parameters: std.ArrayList(*Type),
+            type_parameters: ArrayList(*Type),
 
             pub fn asNamed(self: *@This()) *Type.Decleration {
                 const tag_offset = @offsetOf(Type.Decleration, "tag");
@@ -151,7 +157,7 @@ pub const Type = union(enum) {
         name: []const u8,
 
         parent: ?*Decleration,
-        children: std.ArrayList(*Decleration),
+        children: ArrayList(*Decleration),
 
         cursor: c.CXCursor,
         origin: Origin,
@@ -389,36 +395,35 @@ pub const Registry = struct {
 
     owner: *const Framework,
 
-    order: std.ArrayList(Order),
-    typedefs: std.StringHashMap(*Type.Decleration),
-    unions: std.StringHashMap(*Type.Decleration),
-    structs: std.StringHashMap(*Type.Decleration),
-    functions: std.StringHashMap(*Type.Decleration),
-    enums: std.StringHashMap(*Type.Decleration),
-    protocols: std.StringHashMap(*Type.Decleration),
-    interfaces: std.StringHashMap(*Type.Decleration),
+    order: ArrayList(Order),
+    typedefs: StringHashMap(*Type.Decleration),
+    unions: StringHashMap(*Type.Decleration),
+    structs: StringHashMap(*Type.Decleration),
+    functions: StringHashMap(*Type.Decleration),
+    enums: StringHashMap(*Type.Decleration),
+    protocols: StringHashMap(*Type.Decleration),
+    interfaces: StringHashMap(*Type.Decleration),
 
     pub const Order = struct {
         tag: meta.Tag(Type.Decleration.Tag),
         name: []const u8,
     };
 
-    pub fn init(owner: *const Framework, allocator: Allocator) @This() {
+    pub fn init(owner: *const Framework) @This() {
         return .{
             .owner = owner,
-
-            .order = std.ArrayList(Order).init(allocator),
-            .typedefs = std.StringHashMap(*Type.Decleration).init(allocator),
-            .unions = std.StringHashMap(*Type.Decleration).init(allocator),
-            .structs = std.StringHashMap(*Type.Decleration).init(allocator),
-            .functions = std.StringHashMap(*Type.Decleration).init(allocator),
-            .enums = std.StringHashMap(*Type.Decleration).init(allocator),
-            .protocols = std.StringHashMap(*Type.Decleration).init(allocator),
-            .interfaces = std.StringHashMap(*Type.Decleration).init(allocator),
+            .order = .empty,
+            .typedefs = .empty,
+            .unions = .empty,
+            .structs = .empty,
+            .functions = .empty,
+            .enums = .empty,
+            .protocols = .empty,
+            .interfaces = .empty,
         };
     }
 
-    pub fn getMap(self: *Self, tag: meta.Tag(Type.Decleration.Tag)) *std.StringHashMap(*Type.Decleration) {
+    pub fn getMap(self: *Self, tag: meta.Tag(Type.Decleration.Tag)) *StringHashMap(*Type.Decleration) {
         const map = switch (tag) {
             .typedef => &self.typedefs,
             .@"union" => &self.unions,
@@ -433,16 +438,16 @@ pub const Registry = struct {
         return map;
     }
 
-    pub fn insert(self: *Self, named: *Type.Decleration) !void {
+    pub fn insert(self: *Self, gpa: Allocator, named: *Type.Decleration) !void {
         const tag = meta.activeTag(named.tag);
         const map = self.getMap(tag);
 
         if (!map.contains(named.name) and named.parent == null) {
-            try self.order.append(.{ .tag = tag, .name = named.name });
+            try self.order.append(gpa, .{ .tag = tag, .name = named.name });
         }
 
         if (!map.contains(named.name)) {
-            try map.put(named.name, named);
+            try map.put(gpa, named.name, named);
         }
     }
 
@@ -529,7 +534,7 @@ fn dupeString(self: *@This(), name: []const u8) ![]const u8 {
 }
 
 fn push(self: *@This(), @"type": *Type.Decleration) !void {
-    try self.stack.append(@"type");
+    try self.stack.append(self.gpa, @"type");
 }
 
 fn pop(self: *@This()) void {
@@ -671,7 +676,12 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                 const paren = mem.indexOf(u8, end, ")").?;
                 const column = end[next + 1 .. paren];
                 // Generate stable name that could reference later rendered anonymous declerations.
-                name = try fmt.allocPrintZ(self.arena, "anon{s}{s}", .{ line, column });
+                name = try fmt.allocPrintSentinel(
+                    self.arena,
+                    "anon{s}{s}",
+                    .{ line, column },
+                    0,
+                );
             }
 
             if (mem.eql(u8, name, "__builtin_va_list")) {
@@ -691,14 +701,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                     .decleration = .{
                         .name = try self.dupeString(name),
                         .parent = null,
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = c.clang_getNullCursor(),
                         .origin = origin,
-                        .tag = .{
-                            .identifier = .{
-                                .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                            },
-                        },
+                        .tag = .{ .identifier = .{ .type_parameters = .empty } },
                     },
                 };
             }
@@ -751,14 +757,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                     .decleration = .{
                         .name = name,
                         .parent = null,
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = c.clang_getNullCursor(),
                         .origin = origin,
-                        .tag = .{
-                            .identifier = .{
-                                .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                            },
-                        },
+                        .tag = .{ .identifier = .{ .type_parameters = .empty } },
                     },
                 };
             }
@@ -794,10 +796,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                 name = name[0..i];
             }
 
-            var type_parameters = std.ArrayList(*Type).init(self.gpa);
+            var type_parameters: ArrayList(*Type) = .empty;
             const type_args_count = c.clang_Type_getNumObjCTypeArgs(@"type");
             if (type_args_count > 0) {
-                try type_parameters.ensureTotalCapacity(type_args_count);
+                try type_parameters.ensureTotalCapacity(self.gpa, type_args_count);
                 for (0..type_args_count) |i| {
                     const arg = c.clang_Type_getObjCTypeArg(@"type", @intCast(i));
                     type_parameters.insertAssumeCapacity(i, try self.analyzeType(origin, arg));
@@ -807,14 +809,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                 .decleration = .{
                     .name = name,
                     .parent = null,
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .origin = origin,
                     .cursor = c.clang_getNullCursor(),
-                    .tag = .{
-                        .identifier = .{
-                            .type_parameters = type_parameters,
-                        },
-                    },
+                    .tag = .{ .identifier = .{ .type_parameters = type_parameters } },
                 },
             };
         },
@@ -828,12 +826,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                     .decleration = .{
                         .name = name,
                         .parent = null,
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .origin = origin,
                         .cursor = c.clang_getNullCursor(),
-                        .tag = .{
-                            .type_param = {},
-                        },
+                        .tag = .type_param,
                     },
                 };
             }
@@ -850,14 +846,10 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
                     .decleration = .{
                         .name = name,
                         .parent = null,
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .origin = origin,
                         .cursor = c.clang_getNullCursor(),
-                        .tag = .{
-                            .identifier = .{
-                                .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                            },
-                        },
+                        .tag = .{ .identifier = .{ .type_parameters = .empty } },
                     },
                 };
             }
@@ -875,33 +867,39 @@ fn analyzeType(self: *@This(), origin: Type.Decleration.Origin, @"type": c.CXTyp
     return result;
 }
 
-pub fn parse(
-    args: struct {
-        gpa: Allocator,
-        arena: Allocator,
-        sdk_path: []const u8,
-        framework: *const Framework,
-        result: *Registry,
-        progress: std.Progress.Node,
-    },
-) void {
+pub const Args = struct {
+    gpa: Allocator,
+    arena: Allocator,
+    sdk_path: []const u8,
+    framework: *const Framework,
+    result: *Registry,
+    progress: std.Progress.Node,
+};
+
+pub fn parse(args: Args) void {
     const progress = args.progress.start(args.framework.name, 0);
     defer progress.end();
 
     // Build the path to the framework we're about to parse.
     const path = blk: {
         if (args.framework.header_override) |header| {
-            break :blk fmt.allocPrintZ(
+            break :blk fmt.allocPrintSentinel(
                 args.gpa,
                 "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}",
                 .{ args.sdk_path, args.framework.name, header },
+                0,
             );
         }
-        break :blk fmt.allocPrintZ(args.gpa, "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h", .{
-            args.sdk_path,
-            args.framework.name,
-            args.framework.name,
-        });
+        break :blk fmt.allocPrintSentinel(
+            args.gpa,
+            "{s}/System/Library/Frameworks/{s}.framework/Headers/{s}.h",
+            .{
+                args.sdk_path,
+                args.framework.name,
+                args.framework.name,
+            },
+            0,
+        );
     } catch {
         @panic("OOM");
     };
@@ -942,8 +940,8 @@ pub fn parse(
     var self = Parser{
         .gpa = args.gpa,
         .arena = args.arena,
-        .stack = std.ArrayList(*Type.Decleration).init(args.gpa),
-        .registry = Registry.init(args.framework, args.gpa),
+        .stack = .empty,
+        .registry = Registry.init(args.framework),
         .node = progress,
     };
 
@@ -965,7 +963,7 @@ pub fn parse(
             .decleration = .{
                 .name = "__uint128_t",
                 .parent = null,
-                .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                .children = .empty,
                 .cursor = c.clang_getNullCursor(),
                 .origin = .{
                     .runtime = {},
@@ -977,7 +975,7 @@ pub fn parse(
                 },
             },
         };
-        self.registry.insert(&typedef.decleration) catch {
+        self.registry.insert(args.gpa, &typedef.decleration) catch {
             @panic("OOM");
         };
     }
@@ -1050,7 +1048,12 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
     var name = mem.sliceTo(c.clang_getCString(name_spelling), 0);
     // TODO: See if we can get rid of anonymous types and just declare them inline.
     if (c.clang_Cursor_isAnonymous(cursor) > 0) {
-        name = try fmt.allocPrintZ(self.arena, "anon{}{}", .{ line, column });
+        name = try fmt.allocPrintSentinel(
+            self.arena,
+            "anon{}{}",
+            .{ line, column },
+            0,
+        );
     }
 
     // Handle all the various node types. There are common patterns between similar ast node kinds.
@@ -1080,21 +1083,17 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     .decleration = .{
                         .name = try self.dupeString(name),
                         .parent = self.getParent(),
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = cursor,
                         .origin = origin,
-                        .tag = .{
-                            .typedef = .{
-                                .child = child,
-                            },
-                        },
+                        .tag = .{ .typedef = .{ .child = child } },
                     },
                 };
 
                 if (self.getParent()) |parent| {
-                    try parent.children.append(&typedef.decleration);
+                    try parent.children.append(self.gpa, &typedef.decleration);
                 }
-                try self.registry.insert(&typedef.decleration);
+                try self.registry.insert(self.gpa, &typedef.decleration);
                 try self.push(&typedef.decleration);
             }
 
@@ -1112,19 +1111,15 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     .decleration = .{
                         .name = try self.dupeString(name),
                         .parent = self.getParent(),
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = cursor,
                         .origin = origin,
-                        .tag = .{
-                            .@"union" = .{
-                                .fields = std.StringArrayHashMap(*Type.Decleration.Field).init(self.gpa),
-                            },
-                        },
+                        .tag = .{ .@"union" = .{ .fields = .empty } },
                     },
                 };
 
                 if (self.getParent()) |parent| {
-                    try parent.children.append(&union_decl.decleration);
+                    try parent.children.append(self.gpa, &union_decl.decleration);
                     switch (parent.tag) {
                         .@"struct", .@"union", .protocol, .interface => {},
                         .typedef => |*t| t.child = union_decl,
@@ -1133,7 +1128,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     }
                 }
 
-                try self.registry.insert(&union_decl.decleration);
+                try self.registry.insert(self.gpa, &union_decl.decleration);
                 try self.push(&union_decl.decleration);
             }
 
@@ -1151,19 +1146,15 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     .decleration = .{
                         .name = try self.dupeString(name),
                         .parent = self.getParent(),
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = cursor,
                         .origin = origin,
-                        .tag = .{
-                            .@"struct" = .{
-                                .fields = std.StringArrayHashMap(*Type.Decleration.Field).init(self.gpa),
-                            },
-                        },
+                        .tag = .{ .@"struct" = .{ .fields = .empty } },
                     },
                 };
 
                 if (self.getParent()) |parent| {
-                    try parent.children.append(&struct_decl.decleration);
+                    try parent.children.append(self.gpa, &struct_decl.decleration);
                     switch (parent.tag) {
                         .@"struct", .@"union", .protocol, .interface => {},
                         .typedef => |*t| t.child = struct_decl,
@@ -1172,7 +1163,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     }
                 }
 
-                try self.registry.insert(&struct_decl.decleration);
+                try self.registry.insert(self.gpa, &struct_decl.decleration);
                 try self.push(&struct_decl.decleration);
             }
 
@@ -1201,7 +1192,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = owned_name,
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
@@ -1213,19 +1204,19 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
             };
 
             const parent = self.getParent().?;
-            try parent.children.append(&field.decleration);
+            try parent.children.append(self.gpa, &field.decleration);
             try self.push(&field.decleration);
 
             // Append the field to the parent struct or union
             switch (parent.tag) {
                 .@"union" => |*u| {
                     if (!u.fields.contains(name)) {
-                        try u.fields.put(owned_name, &field.decleration.tag.field);
+                        try u.fields.put(self.gpa, owned_name, &field.decleration.tag.field);
                     }
                 },
                 .@"struct" => |*s| {
                     if (!s.fields.contains(name)) {
-                        try s.fields.put(owned_name, &field.decleration.tag.field);
+                        try s.fields.put(self.gpa, owned_name, &field.decleration.tag.field);
                     }
                 },
                 else => try logUnhandledParentTag(name, "CXCursor_FieldDecl", parent),
@@ -1248,12 +1239,12 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = try self.dupeString(name),
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
                         .function = .{
-                            .params = std.ArrayList(*Type.Decleration.Param).init(self.gpa),
+                            .params = .empty,
                             .result = result,
                         },
                     },
@@ -1261,10 +1252,10 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
             };
 
             if (self.getParent()) |parent| {
-                try parent.children.append(&function_decl.decleration);
+                try parent.children.append(self.gpa, &function_decl.decleration);
             }
 
-            try self.registry.insert(&function_decl.decleration);
+            try self.registry.insert(self.gpa, &function_decl.decleration);
             try self.push(&function_decl.decleration);
 
             // Recurse to discover the functions parameters.
@@ -1279,27 +1270,23 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = try self.dupeString(name),
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
-                    .tag = .{
-                        .param = .{
-                            .type = param_inner,
-                        },
-                    },
+                    .tag = .{ .param = .{ .type = param_inner } },
                 },
             };
 
             const parent = self.getParent().?;
-            try parent.children.append(&param.decleration);
+            try parent.children.append(self.gpa, &param.decleration);
 
             // Append to function or method.
             switch (parent.tag) {
                 .function => |*f| {
-                    try f.params.append(&param.decleration.tag.param);
+                    try f.params.append(self.gpa, &param.decleration.tag.param);
                 },
                 .method => |*p| {
-                    try p.params.append(&param.decleration.tag.param);
+                    try p.params.append(self.gpa, &param.decleration.tag.param);
                 },
                 // TODO: Figure out why typedef is needed for this to run successfully.
                 .typedef => {},
@@ -1318,6 +1305,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                             if (mem.eql(u8, param, name)) {
                                 // TODO: Refactor type references to use Identifier.
                                 try i.super.?.tag.identifier.type_parameters.append(
+                                    self.gpa,
                                     try self.analyzeType(
                                         origin,
                                         c.clang_getCursorType(cursor),
@@ -1334,14 +1322,10 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                             .decleration = .{
                                 .name = try self.dupeString(name),
                                 .parent = parent,
-                                .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                                .children = .empty,
                                 .cursor = cursor,
                                 .origin = origin,
-                                .tag = .{
-                                    .identifier = .{
-                                        .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                    },
-                                },
+                                .tag = .{ .identifier = .{ .type_parameters = .empty } },
                             },
                         };
                         t.child = inner;
@@ -1362,20 +1346,20 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     .decleration = .{
                         .name = try self.dupeString(name),
                         .parent = self.getParent(),
-                        .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                        .children = .empty,
                         .cursor = cursor,
                         .origin = origin,
                         .tag = .{
                             .@"enum" = .{
                                 .backing = backing,
-                                .values = std.ArrayList(Type.Decleration.Enum.Value).init(self.gpa),
+                                .values = .empty,
                             },
                         },
                     },
                 };
 
                 if (self.getParent()) |parent| {
-                    try parent.children.append(&enum_decl.decleration);
+                    try parent.children.append(self.gpa, &enum_decl.decleration);
                     switch (parent.tag) {
                         .@"struct", .@"union", .protocol, .interface => {},
                         .typedef => |*t| t.child = enum_decl,
@@ -1384,7 +1368,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                     }
                 }
 
-                try self.registry.insert(&enum_decl.decleration);
+                try self.registry.insert(self.gpa, &enum_decl.decleration);
                 try self.push(&enum_decl.decleration);
             }
 
@@ -1402,7 +1386,10 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
             const parent = self.getParent().?;
             switch (parent.tag) {
                 .@"enum" => |*e| {
-                    try e.values.append(.{ .name = try self.dupeString(name), .value = @intCast(value) });
+                    try e.values.append(self.gpa, .{
+                        .name = try self.dupeString(name),
+                        .value = @intCast(value),
+                    });
                 },
                 else => try logUnhandledParentTag(name, "CXCursor_EnumConstantDecl", parent),
             }
@@ -1416,23 +1403,23 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = try self.dupeString(name),
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
                         .protocol = .{
-                            .inherits = std.ArrayList(*Type.Decleration).init(self.gpa),
-                            .methods = std.ArrayList(*Type.Decleration.Method).init(self.gpa),
+                            .inherits = .empty,
+                            .methods = .empty,
                         },
                     },
                 },
             };
 
             if (self.getParent()) |parent| {
-                try parent.children.append(&protocol.decleration);
+                try parent.children.append(self.gpa, &protocol.decleration);
             }
 
-            try self.registry.insert(&protocol.decleration);
+            try self.registry.insert(self.gpa, &protocol.decleration);
             try self.push(&protocol.decleration);
 
             // Recurse to find protocol supers and methods.
@@ -1448,13 +1435,13 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = try self.dupeString(name),
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
                         .method = .{
                             .result = result,
-                            .params = std.ArrayList(*Type.Decleration.Param).init(self.gpa),
+                            .params = .empty,
                             // We store which kind of method because it changes how we interact with the runtime.
                             .kind = if (kind == c.CXCursor_ObjCInstanceMethodDecl) .instance else .class,
                         },
@@ -1463,12 +1450,12 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
             };
 
             const parent = self.getParent().?;
-            try parent.children.append(&method.decleration);
+            try parent.children.append(self.gpa, &method.decleration);
 
             // Only protocols and interfaces can have objc methods.
             switch (parent.tag) {
-                .protocol => |*p| try p.methods.append(&method.decleration.tag.method),
-                .interface => |*i| try i.methods.append(&method.decleration.tag.method),
+                .protocol => |*p| try p.methods.append(self.gpa, &method.decleration.tag.method),
+                .interface => |*i| try i.methods.append(self.gpa, &method.decleration.tag.method),
                 else => try logUnhandledParentTag(
                     name,
                     "CXCursor_ObjCInstanceMethodDecl or CXCursor_ObjCClassMethodDecl",
@@ -1497,18 +1484,14 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                         .decleration = .{
                             .name = try self.dupeString(name),
                             .parent = self.getParent(),
-                            .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                            .children = .empty,
                             .cursor = cursor,
                             .origin = origin,
-                            .tag = .{
-                                .identifier = .{
-                                    .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                },
-                            },
+                            .tag = .{ .identifier = .{ .type_parameters = .empty } },
                         },
                     };
 
-                    try parent.children.append(&class.decleration);
+                    try parent.children.append(self.gpa, &class.decleration);
                     try self.push(&class.decleration);
                 }
                 // If we have no parent and our parent is a category decl handled the visitor stack so all
@@ -1535,25 +1518,25 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                 .decleration = .{
                     .name = try self.dupeString(name),
                     .parent = self.getParent(),
-                    .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                    .children = .empty,
                     .cursor = cursor,
                     .origin = origin,
                     .tag = .{
                         .interface = .{
-                            .type_parameters = std.ArrayList([]const u8).init(self.gpa),
+                            .type_parameters = .empty,
                             .super = null,
-                            .protocols = std.ArrayList(*Type.Decleration).init(self.gpa),
-                            .methods = std.ArrayList(*Type.Decleration.Method).init(self.gpa),
+                            .protocols = .empty,
+                            .methods = .empty,
                         },
                     },
                 },
             };
 
             if (self.getParent()) |parent| {
-                try parent.children.append(&interface.decleration);
+                try parent.children.append(self.gpa, &interface.decleration);
             }
 
-            try self.registry.insert(&interface.decleration);
+            try self.registry.insert(self.gpa, &interface.decleration);
             try self.push(&interface.decleration);
 
             // Recurse to find type params and methods.
@@ -1573,39 +1556,31 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                         .decleration = .{
                             .name = try self.dupeString(name),
                             .parent = self.getParent(),
-                            .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                            .children = .empty,
                             .cursor = cursor,
                             .origin = origin,
-                            .tag = .{
-                                .identifier = .{
-                                    .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                },
-                            },
+                            .tag = .{ .identifier = .{ .type_parameters = .empty } },
                         },
                     };
 
-                    try parent.children.append(&ref.decleration);
+                    try parent.children.append(self.gpa, &ref.decleration);
                 }
 
                 // Append to the correct parent.
                 switch (parent.tag) {
                     .function, .method => {},
-                    .protocol => |*i| try i.inherits.append(&ref.decleration),
-                    .interface => |*i| try i.protocols.append(&ref.decleration),
+                    .protocol => |*i| try i.inherits.append(self.gpa, &ref.decleration),
+                    .interface => |*i| try i.protocols.append(self.gpa, &ref.decleration),
                     .typedef => |*t| {
                         const inner = try self.allocType();
                         inner.* = .{
                             .decleration = .{
                                 .name = try self.dupeString(name),
                                 .parent = parent,
-                                .children = std.ArrayList(*Type.Decleration).init(self.gpa),
+                                .children = .empty,
                                 .cursor = cursor,
                                 .origin = origin,
-                                .tag = .{
-                                    .identifier = .{
-                                        .type_parameters = std.ArrayList(*Type).init(self.gpa),
-                                    },
-                                },
+                                .tag = .{ .identifier = .{ .type_parameters = .empty } },
                             },
                         };
                         t.child = inner;
@@ -1622,7 +1597,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
             const super = try self.analyzeType(origin, c.clang_getCursorType(cursor));
 
             if (self.getParent()) |parent| {
-                try parent.children.append(&super.decleration);
+                try parent.children.append(self.gpa, &super.decleration);
             }
 
             const parent = self.getParent().?;
@@ -1643,7 +1618,7 @@ fn visitorInner(self: *Parser, cursor: c.CXCursor, parent_cursor: c.CXCursor) Er
                         }
                     }
 
-                    try i.type_parameters.append(try self.dupeString(name));
+                    try i.type_parameters.append(self.gpa, try self.dupeString(name));
                 },
                 else => try logUnhandledParentTag(name, "CXCursor_TemplateTypeParameter", parent),
             }
@@ -1714,9 +1689,9 @@ fn visitorOuter(
     cursor: c.CXCursor,
     parent_cursor: c.CXCursor,
     client_data: c.CXClientData,
-) callconv(.C) c.CXChildVisitResult {
+) callconv(.c) c.CXChildVisitResult {
     // Conver the client_data back into the builder
-    const self: *Parser = @alignCast(@ptrCast(client_data));
+    const self: *Parser = @ptrCast(@alignCast(client_data));
     return self.visitorInner(cursor, parent_cursor) catch |err| {
         const location = c.clang_getCursorLocation(cursor);
         var file: c.CXFile = undefined;

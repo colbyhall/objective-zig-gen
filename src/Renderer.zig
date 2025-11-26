@@ -6,6 +6,10 @@ const ascii = std.ascii;
 const fmt = std.fmt;
 const meta = std.meta;
 
+const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMapUnmanaged;
+const StringArrayHashMap = std.StringArrayHashMapUnmanaged;
+
 const root = @import("root.zig");
 const Manifest = root.Manifest;
 
@@ -14,7 +18,7 @@ const Registry = Parser.Registry;
 const Type = Parser.Type;
 
 gpa: Allocator,
-writer: std.io.BufferedWriter(4096, std.fs.File.Writer),
+writer: fs.File.Writer,
 frameworks: Manifest,
 registry: *Registry,
 
@@ -30,22 +34,24 @@ const keyword_remap = std.StaticStringMap([]const u8).initComptime(.{
     .{ "bool", "@\"bool\"" },
 });
 
-pub fn init(options: struct {
+pub const Options = struct {
     allocator: Allocator,
     writer: fs.File.Writer,
     manifest: Manifest,
     registry: *Registry,
-}) @This() {
+};
+
+pub fn init(options: Options) @This() {
     return .{
         .gpa = options.allocator,
-        .writer = std.io.bufferedWriter(options.writer),
+        .writer = options.writer,
         .frameworks = options.manifest,
         .registry = options.registry,
     };
 }
 
 pub fn render(self: *@This(), comptime format: []const u8, args: anytype) void {
-    self.writer.writer().print(format, args) catch {
+    self.writer.interface.print(format, args) catch {
         @panic("Failed to write to output file.");
     };
 }
@@ -195,10 +201,10 @@ fn renderNamedName(self: *@This(), named: *Type.Decleration, options: struct {
                 }
 
                 if (!options.ignore_parents) {
-                    var hierarchy = std.ArrayList(*Type.Decleration).init(self.gpa);
+                    var hierarchy: ArrayList(*Type.Decleration) = .empty;
                     var root_type = named;
                     while (root_type.parent != null) {
-                        hierarchy.insert(0, root_type.parent.?) catch {
+                        hierarchy.insert(self.gpa, 0, root_type.parent.?) catch {
                             @panic("OOM");
                         };
                         root_type = root_type.parent.?;
@@ -231,8 +237,8 @@ fn renderNamedName(self: *@This(), named: *Type.Decleration, options: struct {
 }
 
 const MethodCache = struct {
-    render_count: std.StringHashMap(u32),
-    rendered: std.StringHashMap([]const u8),
+    render_count: StringHashMap(u32),
+    rendered: StringHashMap([]const u8),
 };
 
 fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) void {
@@ -259,7 +265,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                 }
 
                 const generated_name = self.generateFunctionName(m.asNamed().name);
-                const e = cache.render_count.getOrPutValue(generated_name, 1) catch {
+                const e = cache.render_count.getOrPutValue(self.gpa, generated_name, 1) catch {
                     @panic("OOM");
                 };
                 defer e.value_ptr.* += 1;
@@ -269,12 +275,12 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                         @panic("OOM");
                     };
                     self.renderMethodDecl(number_name, m);
-                    cache.rendered.put(m.asNamed().name, number_name) catch {
+                    cache.rendered.put(self.gpa, m.asNamed().name, number_name) catch {
                         @panic("OOM");
                     };
                 } else {
                     self.renderMethodDecl(generated_name, m);
-                    cache.rendered.put(m.asNamed().name, generated_name) catch {
+                    cache.rendered.put(self.gpa, m.asNamed().name, generated_name) catch {
                         @panic("OOM");
                     };
                 }
@@ -305,7 +311,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                 }
 
                 const generated_name = self.generateFunctionName(m.asNamed().name);
-                const e = cache.render_count.getOrPutValue(generated_name, 1) catch {
+                const e = cache.render_count.getOrPutValue(self.gpa, generated_name, 1) catch {
                     @panic("OOM");
                 };
                 defer e.value_ptr.* += 1;
@@ -315,12 +321,12 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
                         @panic("OOM");
                     };
                     self.renderMethodDecl(number_name, m);
-                    cache.rendered.put(m.asNamed().name, number_name) catch {
+                    cache.rendered.put(self.gpa, m.asNamed().name, number_name) catch {
                         @panic("OOM");
                     };
                 } else {
                     self.renderMethodDecl(generated_name, m);
-                    cache.rendered.put(m.asNamed().name, generated_name) catch {
+                    cache.rendered.put(self.gpa, m.asNamed().name, generated_name) catch {
                         @panic("OOM");
                     };
                 }
@@ -331,7 +337,7 @@ fn renderMethods(self: *@This(), cache: *MethodCache, named: *Type.Decleration) 
     }
 }
 
-fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap(void), param: *Type) void {
+fn gatherMethodGenericParams(self: *@This(), out_params: *StringArrayHashMap(void), param: *Type) void {
     switch (param.*) {
         .decleration => |n| switch (n.tag) {
             .identifier => |i| {
@@ -340,7 +346,7 @@ fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap
                 }
             },
             .type_param => {
-                out_params.put(n.name, {}) catch {
+                out_params.put(self.gpa, n.name, {}) catch {
                     @panic("OOM");
                 };
             },
@@ -351,13 +357,13 @@ fn gatherMethodGenericParams(self: *@This(), out_params: *std.StringArrayHashMap
 }
 
 fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Decleration.Method) void {
-    var generic_params = std.StringArrayHashMap(void).init(self.gpa);
+    var generic_params: StringArrayHashMap(void) = .empty;
     for (method.params.items) |p| {
         self.gatherMethodGenericParams(&generic_params, p.type);
     }
 
     self.render("pub fn ", .{});
-    _ = self.writer.write(name) catch {
+    _ = self.writer.interface.write(name) catch {
         unreachable;
     };
     self.render("(", .{});
@@ -424,7 +430,7 @@ fn renderMethodDecl(self: *@This(), name: []const u8, method: *Type.Decleration.
 }
 
 fn renderChildrenDecl(self: *@This(), children: []const *Type.Decleration) void {
-    var rendered = std.StringHashMap(void).init(self.gpa);
+    var rendered: StringHashMap(void) = .empty;
     for (children) |c| {
         if (meta.activeTag(c.origin) == .runtime) continue;
 
@@ -432,7 +438,7 @@ fn renderChildrenDecl(self: *@This(), children: []const *Type.Decleration) void 
             .@"struct", .@"union", .@"enum", .interface, .protocol, .typedef => {
                 if (!rendered.contains(c.name)) {
                     if (self.renderNamedDecl(c)) {
-                        rendered.put(c.name, {}) catch {
+                        rendered.put(self.gpa, c.name, {}) catch {
                             @panic("OOM");
                         };
                     }
@@ -583,19 +589,19 @@ fn renderNamedDecl(self: *@This(), named: *Type.Decleration) bool {
 
             self.render("\n", .{});
 
-            var rendered = std.StringHashMap([]const u8).init(self.gpa);
-            rendered.put("retain", "retain") catch {
+            var rendered: StringHashMap([]const u8) = .empty;
+            rendered.put(self.gpa, "retain", "retain") catch {
                 @panic("OOM");
             };
-            rendered.put("release", "release") catch {
+            rendered.put(self.gpa, "release", "release") catch {
                 @panic("OOM");
             };
-            rendered.put("autorelease", "autorelease") catch {
+            rendered.put(self.gpa, "autorelease", "autorelease") catch {
                 @panic("OOM");
             };
 
             var cache = MethodCache{
-                .render_count = std.StringHashMap(u32).init(self.gpa),
+                .render_count = .empty,
                 .rendered = rendered,
             };
             self.renderMethods(&cache, named);
@@ -669,25 +675,25 @@ fn renderNamedDecl(self: *@This(), named: *Type.Decleration) bool {
             self.render("    pub const alloc = Internal.alloc;\n", .{});
             self.render("\n", .{});
 
-            var rendered = std.StringHashMap([]const u8).init(self.gpa);
-            rendered.put("retain", "retain") catch {
+            var rendered: StringHashMap([]const u8) = .empty;
+            rendered.put(self.gpa, "retain", "retain") catch {
                 @panic("OOM");
             };
-            rendered.put("release", "release") catch {
+            rendered.put(self.gpa, "release", "release") catch {
                 @panic("OOM");
             };
-            rendered.put("autorelease", "autorelease") catch {
+            rendered.put(self.gpa, "autorelease", "autorelease") catch {
                 @panic("OOM");
             };
-            rendered.put("new", "new") catch {
+            rendered.put(self.gpa, "new", "new") catch {
                 @panic("OOM");
             };
-            rendered.put("alloc", "alloc") catch {
+            rendered.put(self.gpa, "alloc", "alloc") catch {
                 @panic("OOM");
             };
 
             var cache = MethodCache{
-                .render_count = std.StringHashMap(u32).init(self.gpa),
+                .render_count = .empty,
                 .rendered = rendered,
             };
             self.renderMethods(&cache, named);
@@ -703,7 +709,7 @@ fn renderNamedDecl(self: *@This(), named: *Type.Decleration) bool {
         .method => |m| {
             self.render("pub fn ", .{});
             const out = self.generateFunctionName(named.name);
-            _ = self.writer.write(out) catch {
+            _ = self.writer.interface.write(out) catch {
                 unreachable;
             };
             self.render("(_self: *@This()", .{});
@@ -787,19 +793,19 @@ fn renderNamedDecl(self: *@This(), named: *Type.Decleration) bool {
                         }
                     }
                     if (index == 0) {
-                        _ = self.writer.writer().writeByte(ascii.toLower(name[0])) catch {
+                        _ = self.writer.interface.writeByte(ascii.toLower(name[0])) catch {
                             unreachable;
                         };
-                        _ = self.writer.writer().write(name[1..]) catch {
+                        _ = self.writer.interface.write(name[1..]) catch {
                             unreachable;
                         };
                     } else {
                         for (0..index) |i| {
-                            _ = self.writer.writer().writeByte(ascii.toLower(name[i])) catch {
+                            _ = self.writer.interface.writeByte(ascii.toLower(name[i])) catch {
                                 unreachable;
                             };
                         }
-                        _ = self.writer.writer().write(name[index..]) catch {
+                        _ = self.writer.interface.write(name[index..]) catch {
                             unreachable;
                         };
                     }
@@ -829,7 +835,7 @@ fn renderNameAvoidKeywords(self: *@This(), name: []const u8) void {
     self.render("{s}", .{result});
 }
 
-fn renderFieldDecls(self: *@This(), fields: std.StringArrayHashMap(*Type.Decleration.Field)) void {
+fn renderFieldDecls(self: *@This(), fields: StringArrayHashMap(*Type.Decleration.Field)) void {
     var iter = fields.iterator();
     while (iter.next()) |pair| {
         const f = pair.value_ptr.*;
@@ -917,7 +923,7 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
                 }
 
                 const out = self.generateFunctionName(name);
-                _ = self.writer.write(out) catch {
+                _ = self.writer.interface.write(out) catch {
                     unreachable;
                 };
             },
@@ -953,13 +959,15 @@ fn renderTypeAsIdentifier(self: *@This(), @"type": *Type) void {
     }
 }
 
-pub fn run(args: struct {
+pub const Args = struct {
     allocator: Allocator,
     output: fs.Dir,
     manifest: Manifest,
     registry: *Registry,
     progress: std.Progress.Node,
-}) void {
+};
+
+pub fn run(args: Args) void {
     const progress = args.progress.start(args.registry.owner.name, args.registry.order.items.len);
     defer progress.end();
 
@@ -973,9 +981,10 @@ pub fn run(args: struct {
     };
     defer output_file.close();
 
+    var buffer: [512]u8 = undefined;
     var self = @This().init(.{
         .allocator = args.allocator,
-        .writer = output_file.writer(),
+        .writer = output_file.writer(&buffer),
         .manifest = args.manifest,
         .registry = args.registry,
     });
@@ -993,20 +1002,20 @@ pub fn run(args: struct {
     // Add an empty line between imports and type declerations
     self.render("\n", .{});
 
-    var declared = std.StringHashMap(void).init(args.allocator);
+    var declared: StringHashMap(void) = .empty;
     for (self.registry.order.items) |o| {
         if (!declared.contains(o.name)) {
             const ref = self.registry.lookup(o.tag, o.name);
             if (self.renderFrameworkDecl(ref.?)) {
                 progress.completeOne();
-                declared.put(o.name, {}) catch {
+                declared.put(self.gpa, o.name, {}) catch {
                     @panic("OOM");
                 };
             }
         }
     }
 
-    self.writer.flush() catch {
+    self.writer.interface.flush() catch {
         unreachable;
     };
 }

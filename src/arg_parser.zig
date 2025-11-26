@@ -1,5 +1,12 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const fmt = std.fmt;
+const mem = std.mem;
+const fs = std.fs;
+const process = std.process;
+
+const Allocator = mem.Allocator;
+const ArrayList = std.ArrayList;
+const StringHashMap = std.StringHashMapUnmanaged;
 
 pub const ArgParser = union(enum) {
     const Self = @This();
@@ -18,7 +25,7 @@ pub const ArgParser = union(enum) {
     };
     pub const Parsed = struct {
         path: []const u8,
-        options: std.StringHashMap(Option.ParamValue),
+        options: StringHashMap(Option.ParamValue),
     };
 
     parsed: Parsed,
@@ -26,14 +33,14 @@ pub const ArgParser = union(enum) {
     @"error": []const u8,
 
     pub fn run(gpa: Allocator, comptime options: []const Option) !Self {
-        var args = std.process.args();
+        var args = process.args();
         defer args.deinit();
-        var cwd = std.fs.cwd();
+        var cwd = fs.cwd();
 
         std.debug.assert(args.skip()); // Skip past the executable in the argument
 
         var file: []const u8 = undefined;
-        var option_map = std.StringHashMap(Option.ParamValue).init(gpa);
+        var option_map: StringHashMap(Option.ParamValue) = .empty;
 
         var index: i32 = 1;
         outer: while (args.next()) |arg| {
@@ -41,37 +48,37 @@ pub const ArgParser = union(enum) {
 
             // The help option or the spec json file must be the first argument
             if (index == 1) {
-                if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "-help")) {
-                    var help_buffer = std.ArrayList(u8).init(gpa);
-                    const writer = help_buffer.writer();
+                if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "-help")) {
+                    var help_buffer: ArrayList(u8) = .empty;
+                    const writer = help_buffer.writer(gpa);
 
                     try writer.print("objective-zig-gen [-h | -help] <path/to/manifest.json> [<options>]\n\n", .{});
                     try writer.print("Options:\n\n", .{});
                     for (options) |o| {
                         const name = if (o.alias) |alias|
-                            try std.fmt.allocPrint(gpa, "{s} | {s}", .{ o.name, alias })
+                            try fmt.allocPrint(gpa, "{s} | {s}", .{ o.name, alias })
                         else
-                            try std.fmt.allocPrint(gpa, "{s}", .{o.name});
+                            try fmt.allocPrint(gpa, "{s}", .{o.name});
 
                         try writer.print("   {s: <26}   {s}\n", .{ name, o.description });
                     }
 
                     return .{
-                        .help = try help_buffer.toOwnedSlice(),
+                        .help = try help_buffer.toOwnedSlice(gpa),
                     };
                 }
 
-                if (!std.mem.endsWith(u8, arg, ".json")) {
+                if (!mem.endsWith(u8, arg, ".json")) {
                     return .{
                         .@"error" = "File provided is not a json file.\n",
                     };
                 }
 
-                if (std.fs.path.isAbsolute(arg)) {
+                if (fs.path.isAbsolute(arg)) {
                     // Catch the invalid file error early so zig cc doesn't have to
-                    std.fs.accessAbsolute(arg, .{}) catch |err| {
+                    fs.accessAbsolute(arg, .{}) catch |err| {
                         return .{
-                            .@"error" = try std.fmt.allocPrint(
+                            .@"error" = try fmt.allocPrint(
                                 gpa,
                                 "Failed to access file at path \'{s}\' due to {s}.\n",
                                 .{ arg, @errorName(err) },
@@ -80,12 +87,12 @@ pub const ArgParser = union(enum) {
                     };
 
                     const new_path = try gpa.alloc(u8, arg.len);
-                    std.mem.copyForwards(u8, new_path, arg);
+                    @memcpy(new_path, arg);
                     file = new_path;
                 } else {
                     file = cwd.realpathAlloc(gpa, arg) catch |err| {
                         return .{
-                            .@"error" = try std.fmt.allocPrint(
+                            .@"error" = try fmt.allocPrint(
                                 gpa,
                                 "Failed to access file at path \'{s}\' due to {s}.\n",
                                 .{ arg, @errorName(err) },
@@ -97,9 +104,9 @@ pub const ArgParser = union(enum) {
                 continue;
             }
 
-            if (!std.mem.startsWith(u8, arg, "-")) {
+            if (!mem.startsWith(u8, arg, "-")) {
                 return .{
-                    .@"error" = try std.fmt.allocPrint(
+                    .@"error" = try fmt.allocPrint(
                         gpa,
                         "Argument does not start with '-'. See -h for usage.\n",
                         .{},
@@ -111,9 +118,9 @@ pub const ArgParser = union(enum) {
             const name = arg[1..];
             for (options) |option| {
                 // Check to see if 'name' is this option
-                const name_is_name = std.mem.eql(u8, name, option.name);
+                const name_is_name = mem.eql(u8, name, option.name);
                 if (option.alias) |alias| {
-                    if (!name_is_name and !std.mem.eql(u8, name, alias)) {
+                    if (!name_is_name and !mem.eql(u8, name, alias)) {
                         continue;
                     }
                 } else {
@@ -124,7 +131,7 @@ pub const ArgParser = union(enum) {
 
                 // If we have no param then insert the arg into the option_map
                 if (option.param == .none) {
-                    try option_map.put(option.name, .{ .none = {} });
+                    try option_map.put(gpa, option.name, .{ .none = {} });
                     continue :outer;
                 }
 
@@ -132,7 +139,7 @@ pub const ArgParser = union(enum) {
                 var peek_args = args;
                 var param = peek_args.next();
                 if (param) |p| {
-                    if (std.mem.startsWith(u8, p, "-")) {
+                    if (mem.startsWith(u8, p, "-")) {
                         param = null;
                     }
                 }
@@ -145,20 +152,24 @@ pub const ArgParser = union(enum) {
                 switch (option.param) {
                     .string => {
                         const result = try gpa.alloc(u8, param.?.len);
-                        std.mem.copyForwards(u8, result, param.?);
-                        try option_map.put(option.name, .{ .string = result });
+                        @memcpy(result, param.?);
+                        try option_map.put(gpa, option.name, .{ .string = result });
                     },
                     else => unreachable,
                 }
             }
 
             return .{
-                .@"error" = try std.fmt.allocPrint(
+                .@"error" = try fmt.allocPrint(
                     gpa,
                     "Unknown command '{s}'. See usage using -h.\n",
                     .{name},
                 ),
             };
+        }
+
+        if (index == 1) {
+            return .{ .@"error" = "No manifest path was provided\n" };
         }
 
         return .{
